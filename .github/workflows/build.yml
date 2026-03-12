@@ -1,0 +1,127 @@
+name: Build & Deploy
+
+on:
+  push:
+    branches: [main]
+    tags: ['v*']
+  pull_request:
+    branches: [main]
+
+jobs:
+  # ── Build all client binaries ───────────────────────────────────────────────
+  build:
+    name: Build
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.24'
+          cache: true
+
+      - name: Vet
+        run: go vet ./...
+
+      - name: Test
+        run: go test ./...
+
+      - name: Build — Windows amd64
+        run: |
+          mkdir -p dist
+          GOOS=windows GOARCH=amd64 CGO_ENABLED=0 \
+            go build -ldflags="-s -w -X main.version=${{ github.ref_name }}" \
+            -o dist/owlrun.exe ./cmd/owlrun
+
+      - name: Build — Linux amd64
+        run: |
+          GOOS=linux GOARCH=amd64 CGO_ENABLED=0 \
+            go build -ldflags="-s -w -X main.version=${{ github.ref_name }}" \
+            -o dist/owlrun-linux-amd64 ./cmd/owlrun
+
+      - name: Build — Linux arm64
+        run: |
+          GOOS=linux GOARCH=arm64 CGO_ENABLED=0 \
+            go build -ldflags="-s -w -X main.version=${{ github.ref_name }}" \
+            -o dist/owlrun-linux-arm64 ./cmd/owlrun
+
+      - name: Build — macOS amd64 (Intel)
+        run: |
+          GOOS=darwin GOARCH=amd64 CGO_ENABLED=0 \
+            go build -ldflags="-s -w -X main.version=${{ github.ref_name }}" \
+            -o dist/owlrun-darwin-amd64 ./cmd/owlrun
+
+      - name: Build — macOS arm64 (Apple Silicon)
+        run: |
+          GOOS=darwin GOARCH=arm64 CGO_ENABLED=0 \
+            go build -ldflags="-s -w -X main.version=${{ github.ref_name }}" \
+            -o dist/owlrun-darwin-arm64 ./cmd/owlrun
+
+      - name: Upload artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: owlrun-binaries
+          path: dist/
+          retention-days: 7
+
+  # ── Deploy binaries to get.owlrun.me (tags only) ───────────────────────────
+  deploy:
+    name: Deploy to get.owlrun.me
+    needs: build
+    runs-on: ubuntu-latest
+    if: startsWith(github.ref, 'refs/tags/v')
+
+    steps:
+      - name: Download artifacts
+        uses: actions/download-artifact@v4
+        with:
+          name: owlrun-binaries
+          path: dist/
+
+      - name: Set up SSH
+        run: |
+          mkdir -p ~/.ssh
+          echo "${{ secrets.VPS_SSH_KEY }}" > ~/.ssh/id_ed25519
+          chmod 600 ~/.ssh/id_ed25519
+          ssh-keyscan -H "${{ secrets.VPS_HOST }}" >> ~/.ssh/known_hosts
+
+      - name: Upload binaries to VPS
+        run: |
+          TAG="${{ github.ref_name }}"
+          VPS="${{ secrets.VPS_HOST }}"
+          DEST="/var/www/get.owlrun.me/download"
+
+          # Create versioned + latest directories on VPS
+          ssh -i ~/.ssh/id_ed25519 root@"${VPS}" \
+            "mkdir -p ${DEST}/${TAG} ${DEST}/latest"
+
+          # Upload all binaries to versioned dir
+          scp -i ~/.ssh/id_ed25519 \
+            dist/owlrun.exe \
+            dist/owlrun-linux-amd64 \
+            dist/owlrun-linux-arm64 \
+            dist/owlrun-darwin-amd64 \
+            dist/owlrun-darwin-arm64 \
+            root@"${VPS}":"${DEST}/${TAG}/"
+
+          # Atomically update /latest symlinks
+          ssh -i ~/.ssh/id_ed25519 root@"${VPS}" bash << EOF
+            ln -sf ${DEST}/${TAG}/owlrun.exe          ${DEST}/owlrun.exe
+            ln -sf ${DEST}/${TAG}/owlrun-linux-amd64  ${DEST}/owlrun-linux-amd64
+            ln -sf ${DEST}/${TAG}/owlrun-linux-arm64  ${DEST}/owlrun-linux-arm64
+            ln -sf ${DEST}/${TAG}/owlrun-darwin-amd64 ${DEST}/owlrun-darwin-amd64
+            ln -sf ${DEST}/${TAG}/owlrun-darwin-arm64 ${DEST}/owlrun-darwin-arm64
+            # Verify
+            ls -lh ${DEST}/
+          EOF
+
+      - name: Smoke test download URLs
+        run: |
+          sleep 3  # give Caddy a moment to pick up symlinks
+          curl -fsSL --max-time 10 \
+            "https://get.owlrun.me/download/owlrun.exe" -o /dev/null \
+            && echo "✓ owlrun.exe reachable"
+          curl -fsSL --max-time 10 \
+            "https://get.owlrun.me/download/owlrun-darwin-arm64" -o /dev/null \
+            && echo "✓ owlrun-darwin-arm64 reachable"
