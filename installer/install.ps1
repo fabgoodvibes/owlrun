@@ -23,7 +23,8 @@ $CONFIG_DIR   = Join-Path $env:USERPROFILE  '.owlrun'
 $CONFIG_FILE  = Join-Path $CONFIG_DIR       'owlrun.conf'
 $EXE_PATH     = Join-Path $INSTALL_DIR      'owlrun.exe'
 $TASK_NAME    = 'Owlrun'
-$DOWNLOAD_URL = 'https://get.owlrun.me/download/owlrun.exe'
+$DOWNLOAD_URL    = 'https://get.owlrun.me/download/owlrun.exe'
+$CHECKSUMS_URL   = 'https://get.owlrun.me/download/checksums.txt'
 $OLLAMA_URL   = 'https://ollama.com/download/OllamaSetup.exe'
 $OLLAMA_EXE   = Join-Path $env:LOCALAPPDATA 'Programs\Ollama\ollama.exe'
 $MIN_DISK_GB  = 8
@@ -228,6 +229,35 @@ if (Test-Path $EXE_PATH) {
   Write-OK "owlrun.exe already present — updating"
 }
 Download-File $DOWNLOAD_URL $EXE_PATH 'owlrun.exe'
+
+# Verify SHA-256 checksum
+Write-Step "Verifying integrity…"
+try {
+  $checksumsTmp = Join-Path $env:TEMP 'owlrun-checksums.txt'
+  $wc = New-Object System.Net.WebClient
+  $wc.Headers.Add('User-Agent', "owlrun-installer/1.0")
+  $wc.DownloadFile($CHECKSUMS_URL, $checksumsTmp)
+  $lines = Get-Content $checksumsTmp
+  $entry = $lines | Where-Object { $_ -match 'owlrun\.exe$' } | Select-Object -First 1
+  if ($entry) {
+    $expected = ($entry -split '\s+')[0]
+    $actual = (Get-FileHash -Path $EXE_PATH -Algorithm SHA256).Hash.ToLower()
+    if ($actual -ne $expected) {
+      Remove-Item $EXE_PATH -Force -ErrorAction SilentlyContinue
+      Remove-Item $checksumsTmp -Force -ErrorAction SilentlyContinue
+      Write-Fail "Checksum mismatch! Expected $expected, got $actual"
+      Write-Fail "The download may be corrupted or tampered with. Aborting."
+      Read-Host "Press Enter to exit"
+      exit 1
+    }
+    Write-OK "Checksum verified (SHA-256)"
+  } else {
+    Write-Warn "owlrun.exe not found in checksums.txt — skipping verification"
+  }
+  Remove-Item $checksumsTmp -Force -ErrorAction SilentlyContinue
+} catch {
+  Write-Warn "Could not fetch checksums.txt — skipping verification"
+}
 
 # ── 5. Config wizard ──────────────────────────────────────────────────────────
 Write-Title "[ 5/7 ] Configuration"

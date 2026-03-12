@@ -9,11 +9,15 @@ var modelTable = []struct {
 	{"llama3.1:70b-q4_K_M", 42},
 	{"llama3.1:70b-q2_K", 28},
 	{"qwen2.5-coder:32b-q4_K_M", 22},
+	{"qwen2.5:14b", 10},
 	{"llama3.1:8b-q8_0", 10},
 	{"llama3.1:8b", 6},
+	{"qwen2.5:7b", 5},
 	{"qwen2.5-coder:7b", 5},
 	{"llama3.2:3b", 3},
+	{"qwen2.5:3b", 3},
 	{"llama3.2:1b", 1},
+	{"qwen2.5:1.5b", 1},
 	{"qwen2.5:0.5b", 0}, // CPU-only fallback
 }
 

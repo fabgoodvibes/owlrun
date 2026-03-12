@@ -63,7 +63,7 @@ type DiskConfig struct {
 func defaults() Config {
 	return Config{
 		Marketplace: MarketplaceConfig{
-			Gateway:       "https://gateway.owlrun.me/v1",
+			Gateway:       "https://gateway.owlrun.me",
 			AllowOverride: true,
 		},
 		Inference: InferenceConfig{

@@ -115,9 +115,42 @@ install_ollama() {
 
 download_owlrun() {
   local arch="$1"
+  local binary_name="owlrun-${OS}-${arch}"
   step "Downloading owlrun (${OS}/${arch})…"
   mkdir -p "$INSTALL_DIR"
-  curl -fsSL --output "$EXE_PATH.tmp" "${DOWNLOAD_BASE}/owlrun-${OS}-${arch}"
+  curl -fsSL --output "$EXE_PATH.tmp" "${DOWNLOAD_BASE}/${binary_name}"
+
+  # Verify SHA-256 checksum
+  step "Verifying integrity…"
+  local checksums_file
+  checksums_file=$(mktemp)
+  if curl -fsSL --output "$checksums_file" "${DOWNLOAD_BASE}/checksums.txt" 2>/dev/null; then
+    local expected actual
+    expected=$(grep "${binary_name}$" "$checksums_file" | awk '{print $1}')
+    if [[ -n "$expected" ]]; then
+      if command -v sha256sum &>/dev/null; then
+        actual=$(sha256sum "$EXE_PATH.tmp" | awk '{print $1}')
+      elif command -v shasum &>/dev/null; then
+        actual=$(shasum -a 256 "$EXE_PATH.tmp" | awk '{print $1}')
+      else
+        warn "No sha256sum or shasum found — skipping checksum verification"
+        actual="$expected"
+      fi
+      if [[ "$actual" != "$expected" ]]; then
+        rm -f "$EXE_PATH.tmp" "$checksums_file"
+        fail "Checksum mismatch! Expected ${expected}, got ${actual}"
+        fail "The download may be corrupted or tampered with. Aborting."
+        exit 1
+      fi
+      ok "Checksum verified (SHA-256)"
+    else
+      warn "Binary not found in checksums.txt — skipping verification"
+    fi
+  else
+    warn "Could not fetch checksums.txt — skipping verification"
+  fi
+  rm -f "$checksums_file"
+
   chmod +x "$EXE_PATH.tmp"
   mv "$EXE_PATH.tmp" "$EXE_PATH"
   ok "owlrun installed to $EXE_PATH"

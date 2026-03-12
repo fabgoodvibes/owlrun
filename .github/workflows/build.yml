@@ -27,6 +27,11 @@ jobs:
       - name: Test
         run: go test ./...
 
+      - name: Vulnerability scan
+        run: |
+          go install golang.org/x/vuln/cmd/govulncheck@latest
+          govulncheck ./...
+
       - name: Build — Windows amd64
         run: |
           mkdir -p dist
@@ -57,6 +62,13 @@ jobs:
           GOOS=darwin GOARCH=arm64 CGO_ENABLED=0 \
             go build -ldflags="-s -w -X main.version=${{ github.ref_name }}" \
             -o dist/owlrun-darwin-arm64 ./cmd/owlrun
+
+      - name: Generate checksums
+        run: |
+          cd dist
+          sha256sum owlrun.exe owlrun-linux-amd64 owlrun-linux-arm64 \
+            owlrun-darwin-amd64 owlrun-darwin-arm64 > checksums.txt
+          cat checksums.txt
 
       - name: Upload artifacts
         uses: actions/upload-artifact@v4
@@ -96,13 +108,14 @@ jobs:
           ssh -i ~/.ssh/id_ed25519 root@"${VPS}" \
             "mkdir -p ${DEST}/${TAG} ${DEST}/latest"
 
-          # Upload all binaries to versioned dir
+          # Upload all binaries + checksums to versioned dir
           scp -i ~/.ssh/id_ed25519 \
             dist/owlrun.exe \
             dist/owlrun-linux-amd64 \
             dist/owlrun-linux-arm64 \
             dist/owlrun-darwin-amd64 \
             dist/owlrun-darwin-arm64 \
+            dist/checksums.txt \
             root@"${VPS}":"${DEST}/${TAG}/"
 
           # Atomically update /latest symlinks
@@ -112,6 +125,7 @@ jobs:
             ln -sf ${DEST}/${TAG}/owlrun-linux-arm64  ${DEST}/owlrun-linux-arm64
             ln -sf ${DEST}/${TAG}/owlrun-darwin-amd64 ${DEST}/owlrun-darwin-amd64
             ln -sf ${DEST}/${TAG}/owlrun-darwin-arm64 ${DEST}/owlrun-darwin-arm64
+            ln -sf ${DEST}/${TAG}/checksums.txt       ${DEST}/checksums.txt
             # Verify
             ls -lh ${DEST}/
           EOF
