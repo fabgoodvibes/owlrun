@@ -31,8 +31,19 @@ Your machine                           Owlrun Gateway                    Buyer
 1. Owlrun connects to the gateway over WebSocket and registers your GPU specs
 2. When a buyer sends an inference request, the gateway pushes a job to your node
 3. Your node fetches the buyer's request, forwards it to local Ollama, and streams the response back
-4. You earn 85% of the job revenue; the gateway takes a 15% routing margin
+4. You earn 90% of the job revenue; the gateway takes a 10% routing margin
 5. Payouts are weekly on Solana
+
+**Volume tiers** reward high-throughput nodes with a bigger share:
+
+| Tier | Monthly tokens | You keep |
+|------|---------------|----------|
+| Starter | < 1M | 90% |
+| Pro | 1M – 10M | 92% |
+| Elite | 10M – 100M | 94% |
+| Ultra | 100M+ | 95% |
+
+**Affiliate program**: share your referral code (`owlr_ref_...`) — you earn 20% of the gateway's cut on every node you refer, for 12 months. The referred node's payout is never reduced.
 
 Your node **only** talks to the gateway — never directly to buyers.
 
@@ -51,8 +62,9 @@ Config file: `~/.owlrun/owlrun.conf`
 
 ```ini
 [account]
-api_key  = owlr_prov_...          # From https://dashboard.owlrun.me
-wallet   = <solana-address>       # Payout address
+api_key       = owlr_prov_...      # From https://dashboard.owlrun.me
+wallet        = <solana-address>   # Payout address
+referral_code =                    # Optional affiliate code (owlr_ref_...)
 
 [marketplace]
 gateway        = https://gateway.owlrun.me

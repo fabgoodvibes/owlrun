@@ -145,15 +145,16 @@ function Register-StartupTask {
 }
 
 function Write-DefaultConfig {
-  param([string]$NodeId, [string]$ApiKey, [string]$Wallet)
+  param([string]$NodeId, [string]$ApiKey, [string]$Wallet, [string]$ReferralCode)
   $conf = @"
 ; Owlrun configuration — ~/.owlrun/owlrun.conf
 ; Edit this file to customise your node.
 
 [account]
-node_id = $NodeId
-api_key = $ApiKey
-wallet  = $Wallet
+node_id       = $NodeId
+api_key       = $ApiKey
+wallet        = $Wallet
+referral_code = $ReferralCode
 
 [marketplace]
 gateway        = https://gateway.owlrun.me
@@ -246,9 +247,10 @@ if (-not (Test-Path $CONFIG_FILE)) {
   Write-Host "  Create a free account at https://dashboard.owlrun.me to get your API key." -ForegroundColor DarkCyan
   Write-Host "  You can skip this now and add it later by editing $CONFIG_FILE" -ForegroundColor DarkGray
   Write-Host ""
-  $apiKey = Read-Host "  API key (press Enter to skip)"
-  $wallet = Read-Host "  Solana wallet address for payouts (press Enter to skip)"
-  Write-DefaultConfig -NodeId $nodeId -ApiKey $apiKey.Trim() -Wallet $wallet.Trim()
+  $apiKey   = Read-Host "  API key (press Enter to skip)"
+  $wallet   = Read-Host "  Solana wallet address for payouts (press Enter to skip)"
+  $referral = Read-Host "  Referral code (press Enter to skip)"
+  Write-DefaultConfig -NodeId $nodeId -ApiKey $apiKey.Trim() -Wallet $wallet.Trim() -ReferralCode $referral.Trim()
 } else {
   Write-OK "Existing config preserved at $CONFIG_FILE"
 }

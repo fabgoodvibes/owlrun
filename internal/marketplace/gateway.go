@@ -26,11 +26,12 @@ type registerPayload struct {
 	OllamaURL    string   `json:"ollama_url"`
 	Region       string   `json:"region"`
 	Wallet       string   `json:"wallet,omitempty"`
+	ReferralCode string   `json:"referral_code,omitempty"`
 	Version      string   `json:"version"`
 }
 
 // BuildRegistration serialises the node registration payload.
-func BuildRegistration(nodeID, apiKey, wallet, region, version string, info gpu.Info, models []string) ([]byte, error) {
+func BuildRegistration(nodeID, apiKey, wallet, referralCode, region, version string, info gpu.Info, models []string) ([]byte, error) {
 	if region == "" {
 		region = "auto"
 	}
@@ -44,9 +45,10 @@ func BuildRegistration(nodeID, apiKey, wallet, region, version string, info gpu.
 		VRAMExact:   info.VRAMExact,
 		Models:      models,
 		OllamaURL:   "http://localhost:11434",
-		Region:      region,
-		Wallet:      wallet,
-		Version:     version,
+		Region:       region,
+		Wallet:       wallet,
+		ReferralCode: referralCode,
+		Version:      version,
 	}
 	return json.Marshal(p)
 }

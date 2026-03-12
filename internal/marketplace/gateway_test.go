@@ -17,7 +17,7 @@ func TestBuildRegistration_Fields(t *testing.T) {
 	}
 	models := []string{"llama3:8b", "mistral:7b"}
 
-	raw, err := BuildRegistration("node-123", "sk-key", "SolanaWallet", "us-east", "v0.1.0", info, models)
+	raw, err := BuildRegistration("node-123", "sk-key", "SolanaWallet", "owlr_ref_abc", "us-east", "v0.1.0", info, models)
 	if err != nil {
 		t.Fatalf("BuildRegistration error: %v", err)
 	}
@@ -65,7 +65,7 @@ func TestBuildRegistration_Fields(t *testing.T) {
 func TestBuildRegistration_NoModels(t *testing.T) {
 	info := gpu.Info{Vendor: "amd", Name: "AMD RX 7900 XTX", VRAMExact: false}
 
-	raw, err := BuildRegistration("n", "k", "", "", "dev", info, nil)
+	raw, err := BuildRegistration("n", "k", "", "", "", "dev", info, nil)
 	if err != nil {
 		t.Fatalf("BuildRegistration error: %v", err)
 	}
@@ -86,7 +86,7 @@ func TestBuildRegistration_NoModels(t *testing.T) {
 
 func TestBuildRegistration_JSONRoundtrip(t *testing.T) {
 	info := gpu.Info{Vendor: "nvidia", Name: "RTX 3080", VRAMTotalMB: 10240}
-	raw, err := BuildRegistration("id", "key", "wallet", "eu-west", "v1", info, []string{"phi3:mini"})
+	raw, err := BuildRegistration("id", "key", "wallet", "", "eu-west", "v1", info, []string{"phi3:mini"})
 	if err != nil {
 		t.Fatal(err)
 	}

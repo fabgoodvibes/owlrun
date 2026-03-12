@@ -124,15 +124,16 @@ download_owlrun() {
 }
 
 write_config() {
-  local node_id="$1" api_key="$2" wallet="$3"
+  local node_id="$1" api_key="$2" wallet="$3" referral="$4"
   mkdir -p "$CONFIG_DIR"
   cat > "$CONFIG_FILE" <<EOF
 ; Owlrun configuration — ~/.owlrun/owlrun.conf
 
 [account]
-node_id = $node_id
-api_key = $api_key
-wallet  = $wallet
+node_id       = $node_id
+api_key       = $api_key
+wallet        = $wallet
+referral_code = $referral
 
 [marketplace]
 gateway        = https://gateway.owlrun.me
@@ -288,7 +289,8 @@ if [[ ! -f "$CONFIG_FILE" ]]; then
   echo ""
   read -rp "  API key (press Enter to skip): " API_KEY
   read -rp "  Solana wallet for payouts (press Enter to skip): " WALLET
-  write_config "$NODE_ID" "${API_KEY:-}" "${WALLET:-}"
+  read -rp "  Referral code (press Enter to skip): " REFERRAL
+  write_config "$NODE_ID" "${API_KEY:-}" "${WALLET:-}" "${REFERRAL:-}"
 else
   ok "Existing config preserved"
 fi

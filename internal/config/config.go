@@ -22,9 +22,10 @@ type Config struct {
 }
 
 type AccountConfig struct {
-	NodeID string // stable UUID generated once, persisted to conf
-	APIKey string
-	Wallet string // Solana pubkey (base58) or EVM address (0x...)
+	NodeID      string // stable UUID generated once, persisted to conf
+	APIKey      string
+	Wallet      string // Solana pubkey (base58) or EVM address (0x...)
+	ReferralCode string // affiliate referral code (owlr_ref_<code>), optional
 }
 
 type MarketplaceConfig struct {
@@ -133,6 +134,7 @@ func Load() (Config, error) {
 		cfg.Account.NodeID = sec.Key("node_id").String()
 		cfg.Account.APIKey = sec.Key("api_key").String()
 		cfg.Account.Wallet = sec.Key("wallet").String()
+		cfg.Account.ReferralCode = sec.Key("referral_code").String()
 	}
 
 	if sec, err := f.GetSection("marketplace"); err == nil {

@@ -58,6 +58,7 @@ func Run(cfg config.Config, dash *dashboard.Server) {
 		cfg.Account.APIKey,
 		nodeID,
 		cfg.Account.Wallet,
+		cfg.Account.ReferralCode,
 		cfg.Marketplace.Region,
 		"0.1.0",
 		info,

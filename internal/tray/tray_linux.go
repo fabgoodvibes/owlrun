@@ -192,6 +192,7 @@ func buildDaemon(cfg config.Config, dash *dashboard.Server) *sniDaemon {
 		cfg.Account.APIKey,
 		nodeID,
 		cfg.Account.Wallet,
+		cfg.Account.ReferralCode,
 		cfg.Marketplace.Region,
 		"0.1.0",
 		info,
