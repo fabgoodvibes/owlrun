@@ -25,8 +25,8 @@ func TestDefaults_NoFile(t *testing.T) {
 		t.Fatalf("Load() error: %v", err)
 	}
 
-	if cfg.Marketplace.Gateway != "https://gateway.owlrun.me/v1" {
-		t.Errorf("Gateway = %q, want https://gateway.owlrun.me/v1", cfg.Marketplace.Gateway)
+	if cfg.Marketplace.Gateway != "https://gateway.owlrun.me" {
+		t.Errorf("Gateway = %q, want https://gateway.owlrun.me", cfg.Marketplace.Gateway)
 	}
 	if !cfg.Marketplace.AllowOverride {
 		t.Error("AllowOverride should default to true")
@@ -164,7 +164,7 @@ func TestLoad_PartialFile_FallsBackToDefaults(t *testing.T) {
 		t.Errorf("TriggerMinutes = %d, want 3", cfg.Idle.TriggerMinutes)
 	}
 	// Everything else must be default.
-	if cfg.Marketplace.Gateway != "https://gateway.owlrun.me/v1" {
+	if cfg.Marketplace.Gateway != "https://gateway.owlrun.me" {
 		t.Errorf("Gateway should be default, got %q", cfg.Marketplace.Gateway)
 	}
 	if cfg.Inference.MaxVRAMPct != 80 {
