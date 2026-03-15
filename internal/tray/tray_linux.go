@@ -21,6 +21,7 @@ import (
 	"time"
 
 	"github.com/fabgoodvibes/owlrun/internal/assets"
+	"github.com/fabgoodvibes/owlrun/internal/buildinfo"
 	"github.com/fabgoodvibes/owlrun/internal/config"
 	"github.com/fabgoodvibes/owlrun/internal/dashboard"
 	"github.com/fabgoodvibes/owlrun/internal/disk"
@@ -94,10 +95,13 @@ type menuProps struct {
 type linuxState int
 
 const (
-	linuxIdle     linuxState = iota
-	linuxStarting            // Ollama startup in progress
-	linuxEarning
-	linuxPaused
+	linuxIdle          linuxState = iota
+	linuxStarting                 // Ollama startup in progress
+	linuxReady                    // Ollama up, connecting to gateway
+	linuxEarning                  // Gateway connected, serving jobs
+	linuxMissingWallet            // No payout wallet configured
+	linuxError                    // Hard error (Ollama crash, etc.)
+	linuxPaused                   // User manually paused
 )
 
 // ─── sniDaemon ────────────────────────────────────────────────────────────────
@@ -118,6 +122,8 @@ type sniDaemon struct {
 	iconGreen  []iconPixmap
 	iconYellow []iconPixmap
 	iconGrey   []iconPixmap
+	iconRed    []iconPixmap
+	iconBlue   []iconPixmap
 
 	mu             sync.Mutex
 	st             linuxState
@@ -184,6 +190,8 @@ func buildDaemon(cfg config.Config, dash *dashboard.Server) *sniDaemon {
 		iconGreen:  safeIco(assets.IconGreen),
 		iconYellow: safeIco(assets.IconYellow),
 		iconGrey:   safeIco(assets.IconGrey),
+		iconRed:    safeIco(assets.IconRed),
+		iconBlue:   safeIco(assets.IconBlue),
 	}
 
 	d.gateway = marketplace.New(
@@ -301,16 +309,28 @@ func (d *sniDaemon) applyStateLocked() {
 	switch d.st {
 	case linuxEarning:
 		icon = d.iconGreen
-		label = "● Earning"
-		desc = "Actively serving inference"
+		label = "🟢 Earning"
+		desc = "Connected and serving inference"
+	case linuxReady, linuxStarting:
+		icon = d.iconYellow
+		label = "🟡 Getting ready"
+		desc = "Setting up Ollama / connecting to gateway"
+	case linuxMissingWallet:
+		icon = d.iconBlue
+		label = "🔵 Wallet not set"
+		desc = "Set your Solana wallet to start earning"
+	case linuxError:
+		icon = d.iconRed
+		label = "🔴 Error"
+		desc = "Something went wrong — check logs"
 	case linuxPaused:
 		icon = d.iconGrey
-		label = "○ Paused"
+		label = "⚪ Paused"
 		desc = "Manually paused"
-	default: // idle / starting
+	default: // idle
 		icon = d.iconYellow
-		label = "◑ Idle"
-		desc = "Waiting for idle threshold"
+		label = "🟡 Idle"
+		desc = "Waiting for idle conditions"
 	}
 
 	d.sniProps.SetMust(sniIface, "IconPixmap", icon)
@@ -385,6 +405,12 @@ func (m *dbusMenu) GetLayout(parentId, recursionDepth int32, propertyNames []str
 			item(6, "Open Dashboard", true),
 			item(7, tl, true),
 			sep(8),
+			item(10, "🟢 Green  — Connected & earning", false),
+			item(11, "🟡 Yellow — Getting ready", false),
+			item(12, "🔵 Blue   — Wallet not set", false),
+			item(13, "🔴 Red    — Error", false),
+			item(14, "⚪ Grey   — Paused", false),
+			sep(15),
 			item(9, "Quit", true),
 		},
 	}
@@ -442,25 +468,38 @@ func (d *sniDaemon) idleLoop() {
 }
 
 func (d *sniDaemon) check() {
+	d.mu.Lock()
+	paused := d.manuallyPaused
+	st := d.st
+	d.mu.Unlock()
+
+	if paused {
+		return
+	}
+
+	if st == linuxEarning || st == linuxReady || st == linuxMissingWallet {
+		// Ollama is running. Only stop if the user returns or a game launches.
+		userBack := idle.IdleDuration() < time.Duration(d.cfg.Idle.TriggerMinutes)*time.Minute
+		gameRunning := d.cfg.Idle.WatchProcesses && idle.IsGameRunning()
+		if userBack || gameRunning {
+			d.mu.Lock()
+			d.st = linuxIdle
+			d.applyStateLocked()
+			d.mu.Unlock()
+			go d.stopEarning()
+		}
+		return
+	}
+
+	// Not currently earning — use full idle check (including GPU threshold).
 	systemIdle := idle.IsSystemIdle(d.cfg.Idle, d.monitor.UtilizationPct())
 
 	d.mu.Lock()
 	defer d.mu.Unlock()
 
-	if d.manuallyPaused {
-		return
-	}
-
 	if systemIdle && d.st == linuxIdle && !d.starting {
 		d.starting = true
 		go d.startEarning()
-		return
-	}
-
-	if !systemIdle && d.st == linuxEarning {
-		d.st = linuxIdle
-		d.applyStateLocked()
-		go d.stopEarning()
 	}
 }
 
@@ -477,7 +516,7 @@ func (d *sniDaemon) startEarning() {
 			log.Printf("owlrun: %s: %v", s.name, err)
 			d.mu.Lock()
 			d.starting = false
-			d.st = linuxIdle
+			d.st = linuxError
 			d.applyStateLocked()
 			d.mu.Unlock()
 			return
@@ -496,7 +535,7 @@ func (d *sniDaemon) startEarning() {
 			_ = d.ollamaMgr.Stop()
 			d.mu.Lock()
 			d.starting = false
-			d.st = linuxIdle
+			d.st = linuxError
 			d.applyStateLocked()
 			d.mu.Unlock()
 			return
@@ -510,13 +549,17 @@ func (d *sniDaemon) startEarning() {
 	d.mu.Lock()
 	d.model = model
 	d.starting = false
-	d.st = linuxEarning
+	if config.NeedsWallet(&d.cfg) {
+		d.st = linuxMissingWallet
+	} else {
+		d.st = linuxReady
+	}
 	d.applyStateLocked()
 	d.mu.Unlock()
 
 	d.gateway.SetModel(model)
 	d.gateway.Connect()
-	log.Printf("owlrun: earning — connected to gateway")
+	log.Printf("owlrun: ready — connecting to gateway")
 }
 
 func (d *sniDaemon) loadOrPull(model string) error {
@@ -551,12 +594,21 @@ func (d *sniDaemon) statusSnapshot() dashboard.Status {
 
 	var s dashboard.Status
 	s.NodeID = d.nodeID
-	s.Version = "0.1.0"
+	s.Version = buildinfo.Version
+	s.Network = buildinfo.Network
+	s.Wallet.Address = d.cfg.Account.Wallet
+	if config.NeedsWallet(&d.cfg) {
+		s.Wallet.Warning = "Set your Solana wallet in <code>~/.owlrun/owlrun.conf</code> under <code>[account]</code> → <code>wallet = YOUR_SOLANA_PUBKEY</code> to receive payouts."
+	}
 	switch st {
 	case linuxEarning:
 		s.State = "earning"
-	case linuxStarting:
-		s.State = "starting"
+	case linuxReady, linuxStarting:
+		s.State = "ready"
+	case linuxMissingWallet:
+		s.State = "wallet"
+	case linuxError:
+		s.State = "error"
 	case linuxPaused:
 		s.State = "paused"
 	default:

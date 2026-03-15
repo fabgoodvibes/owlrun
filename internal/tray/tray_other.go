@@ -13,6 +13,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/fabgoodvibes/owlrun/internal/buildinfo"
 	"github.com/fabgoodvibes/owlrun/internal/config"
 	"github.com/fabgoodvibes/owlrun/internal/dashboard"
 	"github.com/fabgoodvibes/owlrun/internal/disk"
@@ -26,9 +27,12 @@ import (
 type state int
 
 const (
-	stateIdle    state = iota
+	stateIdle          state = iota
 	stateStarting
+	stateReady
 	stateEarning
+	stateMissingWallet
+	stateError
 )
 
 type daemon struct {
@@ -114,26 +118,35 @@ func (d *daemon) idleLoop() {
 }
 
 func (d *daemon) check() {
-	systemIdle := idle.IsSystemIdle(d.cfg.Idle, d.monitor.UtilizationPct())
-
 	d.mu.Lock()
 	st := d.st
 	d.mu.Unlock()
+
+	gpuUtil := d.monitor.UtilizationPct()
+
+	if st == stateEarning || st == stateReady || st == stateMissingWallet {
+		// Ollama is running. Only stop if the user returns or a game launches.
+		userBack := idle.IdleDuration() < time.Duration(d.cfg.Idle.TriggerMinutes)*time.Minute
+		gameRunning := d.cfg.Idle.WatchProcesses && idle.IsGameRunning()
+		if userBack || gameRunning {
+			d.mu.Lock()
+			d.st = stateIdle
+			d.mu.Unlock()
+			log.Println("owlrun: conditions no longer met — stopping")
+			go d.stopEarning()
+		}
+		return
+	}
+
+	// Not currently earning — use the full idle check (including GPU threshold)
+	// to avoid starting if someone else is using the GPU.
+	systemIdle := idle.IsSystemIdle(d.cfg.Idle, gpuUtil)
 
 	if systemIdle && st == stateIdle {
 		d.mu.Lock()
 		d.st = stateStarting
 		d.mu.Unlock()
 		go d.startEarning()
-		return
-	}
-
-	if !systemIdle && st == stateEarning {
-		d.mu.Lock()
-		d.st = stateIdle
-		d.mu.Unlock()
-		log.Println("owlrun: conditions no longer met — stopping")
-		go d.stopEarning()
 	}
 }
 
@@ -148,7 +161,7 @@ func (d *daemon) startEarning() {
 		if err := s.fn(); err != nil {
 			log.Printf("owlrun: %s: %v", s.name, err)
 			d.mu.Lock()
-			d.st = stateIdle
+			d.st = stateError
 			d.mu.Unlock()
 			return
 		}
@@ -164,7 +177,7 @@ func (d *daemon) startEarning() {
 			}
 			_ = d.ollamaMgr.Stop()
 			d.mu.Lock()
-			d.st = stateIdle
+			d.st = stateError
 			d.mu.Unlock()
 			return
 		}
@@ -176,12 +189,16 @@ func (d *daemon) startEarning() {
 
 	d.mu.Lock()
 	d.model = model
-	d.st = stateEarning
+	if config.NeedsWallet(&d.cfg) {
+		d.st = stateMissingWallet
+	} else {
+		d.st = stateReady
+	}
 	d.mu.Unlock()
 
 	d.gateway.SetModel(model)
 	d.gateway.Connect()
-	log.Printf("owlrun: earning — connected to gateway")
+	log.Printf("owlrun: ready — connecting to gateway")
 }
 
 func (d *daemon) loadOrPull(model string) error {
@@ -216,12 +233,21 @@ func (d *daemon) statusSnapshot() dashboard.Status {
 
 	var s dashboard.Status
 	s.NodeID = d.nodeID
-	s.Version = "0.1.0"
+	s.Version = buildinfo.Version
+	s.Network = buildinfo.Network
+	s.Wallet.Address = d.cfg.Account.Wallet
+	if config.NeedsWallet(&d.cfg) {
+		s.Wallet.Warning = "Set your Solana wallet in <code>~/.owlrun/owlrun.conf</code> under <code>[account]</code> → <code>wallet = YOUR_SOLANA_PUBKEY</code> to receive payouts."
+	}
 	switch st {
 	case stateEarning:
 		s.State = "earning"
-	case stateStarting:
-		s.State = "starting"
+	case stateReady, stateStarting:
+		s.State = "ready"
+	case stateMissingWallet:
+		s.State = "wallet"
+	case stateError:
+		s.State = "error"
 	default:
 		s.State = "idle"
 	}

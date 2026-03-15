@@ -19,6 +19,7 @@ import (
 	"time"
 
 	"github.com/fabgoodvibes/owlrun/internal/assets"
+	"github.com/fabgoodvibes/owlrun/internal/buildinfo"
 	"github.com/fabgoodvibes/owlrun/internal/config"
 	"github.com/fabgoodvibes/owlrun/internal/dashboard"
 	"github.com/fabgoodvibes/owlrun/internal/disk"
@@ -34,9 +35,12 @@ import (
 type State int
 
 const (
-	StateEarning State = iota // 🟢 Actively serving inference
-	StateIdle                 // 🟡 Waiting for idle threshold
-	StatePaused               // ⚫ Manually paused by user
+	StateEarning       State = iota // 🟢 Connected and serving jobs
+	StateIdle                       // 🟡 Waiting for idle conditions
+	StateReady                      // 🟡 Ollama up, connecting to gateway
+	StateMissingWallet              // 🔵 No payout wallet configured
+	StateError                      // 🔴 Hard error
+	StatePaused                     // ⚫ Manually paused by user
 )
 
 // Agent is the top-level controller that drives the tray and all subsystems.
@@ -61,8 +65,9 @@ type Agent struct {
 	mTotal     *systray.MenuItem
 	mToggle    *systray.MenuItem
 	mDashboard *systray.MenuItem
-	mDiskWarn  *systray.MenuItem // shown only when disk is low
-	mQuit      *systray.MenuItem
+	mWalletWarn *systray.MenuItem // shown when wallet not configured
+	mDiskWarn   *systray.MenuItem // shown only when disk is low
+	mQuit       *systray.MenuItem
 }
 
 // Run detects the GPU, then starts the system tray. Blocks until Quit.
@@ -124,6 +129,14 @@ func (a *Agent) onReady() {
 	a.mTotal.Disable()
 	systray.AddSeparator()
 
+	// Wallet warning
+	a.mWalletWarn = systray.AddMenuItem("⚠ Set your payout wallet in ~/.owlrun/owlrun.conf", "")
+	a.mWalletWarn.Disable()
+	if !config.NeedsWallet(&a.cfg) {
+		a.mWalletWarn.Hide()
+	}
+	systray.AddSeparator()
+
 	// Actions
 	a.mToggle = systray.AddMenuItem(a.toggleLabel(), "Pause or resume Owlrun")
 	a.mDashboard = systray.AddMenuItem("Open Dashboard", "Open localhost:8080")
@@ -131,8 +144,20 @@ func (a *Agent) onReady() {
 	a.mDiskWarn = systray.AddMenuItem("", "")
 	a.mDiskWarn.Disable()
 	a.mDiskWarn.Hide()
-	mSettings := systray.AddMenuItem("Settings", "Open settings")
-	mSettings.Disable() // Step 9
+
+	// Color legend
+	systray.AddSeparator()
+	for _, l := range []string{
+		"🟢 Green  — Connected & earning",
+		"🟡 Yellow — Getting ready",
+		"🔵 Blue   — Wallet not set",
+		"🔴 Red    — Error",
+		"⚪ Grey   — Paused",
+	} {
+		m := systray.AddMenuItem(l, "")
+		m.Disable()
+	}
+	systray.AddSeparator()
 	a.mQuit = systray.AddMenuItem("Quit", "Exit Owlrun")
 
 	if a.dash != nil {
@@ -210,28 +235,38 @@ func (a *Agent) checkAndUpdateState() {
 		return // user has manually paused; do not touch state
 	}
 
+	a.mu.Lock()
+	st := a.state
+	a.mu.Unlock()
+
+	if st == StateEarning || st == StateReady || st == StateMissingWallet {
+		// Ollama is running. Only stop if the user returns or a game launches.
+		userBack := idle.IdleDuration() < time.Duration(a.cfg.Idle.TriggerMinutes)*time.Minute
+		gameRunning := a.cfg.Idle.WatchProcesses && idle.IsGameRunning()
+		if userBack || gameRunning {
+			a.mu.Lock()
+			a.state = StateIdle
+			a.refreshMenuLocked()
+			a.mu.Unlock()
+			go a.stopEarning()
+		}
+		return
+	}
+
+	// Not currently earning — use full idle check (including GPU threshold).
 	systemIdle := idle.IsSystemIdle(a.cfg.Idle, a.gpuMonitor.UtilizationPct())
 
 	a.mu.Lock()
 	defer a.mu.Unlock()
 
 	if systemIdle && a.state == StateIdle && !a.starting {
-		// Conditions just became met — kick off the Ollama startup pipeline.
 		a.starting = true
 		go a.startEarning()
-		return
-	}
-
-	if !systemIdle && a.state == StateEarning {
-		// Conditions no longer met — stop Ollama.
-		a.state = StateIdle
-		a.refreshMenuLocked()
-		go a.stopEarning()
 	}
 }
 
 // startEarning runs the full Ollama startup pipeline in a background goroutine.
-// On success it transitions to StateEarning; on any failure it falls back to StateIdle.
+// On success it transitions to Ready/MissingWallet; on failure it goes to Error.
 func (a *Agent) startEarning() {
 	for _, s := range []struct {
 		name string
@@ -244,7 +279,7 @@ func (a *Agent) startEarning() {
 			log.Printf("owlrun: %s: %v", s.name, err)
 			a.mu.Lock()
 			a.starting = false
-			a.state = StateIdle
+			a.state = StateError
 			a.refreshMenuLocked()
 			a.mu.Unlock()
 			return
@@ -262,7 +297,7 @@ func (a *Agent) startEarning() {
 			_ = a.ollamaMgr.Stop()
 			a.mu.Lock()
 			a.starting = false
-			a.state = StateIdle
+			a.state = StateError
 			a.refreshMenuLocked()
 			a.mu.Unlock()
 			return
@@ -273,18 +308,19 @@ func (a *Agent) startEarning() {
 		log.Printf("owlrun: starting — model %s", model)
 	}
 
-	// Record model, tell gateway, connect.
 	a.mu.Lock()
 	a.model = model
+	a.starting = false
+	if config.NeedsWallet(&a.cfg) {
+		a.state = StateMissingWallet
+	} else {
+		a.state = StateReady
+	}
+	a.refreshMenuLocked()
 	a.mu.Unlock()
 	a.gateway.SetModel(model)
 	a.gateway.Connect()
-
-	a.mu.Lock()
-	a.starting = false
-	a.state = StateEarning
-	a.refreshMenuLocked()
-	a.mu.Unlock()
+	log.Printf("owlrun: ready — connecting to gateway")
 }
 
 // loadOrPull pulls the model if not yet present, then warms it into VRAM.
@@ -342,8 +378,12 @@ func (a *Agent) applyIcon() {
 	switch a.state {
 	case StateEarning:
 		systray.SetIcon(assets.IconGreen)
-	case StateIdle:
+	case StateIdle, StateReady:
 		systray.SetIcon(assets.IconYellow)
+	case StateMissingWallet:
+		systray.SetIcon(assets.IconBlue)
+	case StateError:
+		systray.SetIcon(assets.IconRed)
 	case StatePaused:
 		systray.SetIcon(assets.IconGrey)
 	}
@@ -352,11 +392,17 @@ func (a *Agent) applyIcon() {
 func (a *Agent) stateLabel() string {
 	switch a.state {
 	case StateEarning:
-		return "● Earning"
+		return "🟢 Earning"
 	case StateIdle:
-		return "◑ Idle — waiting"
+		return "🟡 Idle — waiting"
+	case StateReady:
+		return "🟡 Getting ready"
+	case StateMissingWallet:
+		return "🔵 Wallet not set"
+	case StateError:
+		return "🔴 Error"
 	case StatePaused:
-		return "○ Paused"
+		return "⚪ Paused"
 	}
 	return ""
 }
@@ -437,14 +483,25 @@ func (a *Agent) statusSnapshot() dashboard.Status {
 
 	var s dashboard.Status
 	s.NodeID = a.nodeID
-	s.Version = "0.1.0"
+	s.Version = buildinfo.Version
+	s.Network = buildinfo.Network
+	s.Wallet.Address = a.cfg.Account.Wallet
+	if config.NeedsWallet(&a.cfg) {
+		s.Wallet.Warning = "Set your Solana wallet in <code>~/.owlrun/owlrun.conf</code> under <code>[account]</code> → <code>wallet = YOUR_SOLANA_PUBKEY</code> to receive payouts."
+	}
 	switch state {
 	case StateEarning:
 		s.State = "earning"
-	case StateIdle:
-		s.State = "idle"
+	case StateReady:
+		s.State = "ready"
+	case StateMissingWallet:
+		s.State = "wallet"
+	case StateError:
+		s.State = "error"
 	case StatePaused:
 		s.State = "paused"
+	default:
+		s.State = "idle"
 	}
 
 	// GPU

@@ -17,10 +17,11 @@ import (
 )
 
 const (
-	heartbeatInterval = 30 * time.Second
-	jobAcceptTimeout  = 2 * time.Second
-	reconnectDelay    = 5 * time.Second
-	wsPath            = "/v1/gateway/ws"
+	heartbeatInterval   = 30 * time.Second
+	jobAcceptTimeout    = 2 * time.Second
+	reconnectDelayInit  = 1 * time.Second
+	reconnectDelayMax   = 30 * time.Second
+	wsPath              = "/v1/gateway/ws"
 	jobFetchPath  = "/v1/gateway/jobs/%s/proxy/request"
 	jobSubmitPath = "/v1/gateway/jobs/%s/proxy/response"
 )
@@ -209,21 +210,40 @@ func (c *Connector) Disconnect() {
 }
 
 // runLoop keeps the WS connection alive, reconnecting on failure.
+// Uses exponential backoff: 1s → 2s → 4s → … capped at 30s.
+// Resets to 1s after a successful WS session so reconnects are fast after
+// transient drops (the common case under load).
 func (c *Connector) runLoop(ctx context.Context) {
+	delay := reconnectDelayInit
 	for {
-		if err := c.register(ctx); err != nil {
-			log.Printf("owlrun: gateway: register: %v — retry in %s", err, reconnectDelay)
-		} else if err := c.runSession(ctx); err != nil {
+		regErr := c.register(ctx)
+		if regErr != nil {
+			log.Printf("owlrun: gateway: register: %v — retry in %s", regErr, delay)
+		} else {
+			err := c.runSession(ctx)
 			if ctx.Err() != nil {
 				return // clean shutdown
 			}
-			log.Printf("owlrun: gateway: session ended: %v — reconnecting in %s", err, reconnectDelay)
+			if err != nil {
+				log.Printf("owlrun: gateway: session ended: %v — reconnecting in %s", err, reconnectDelayInit)
+			}
+			// Session was established (WS connected) then dropped —
+			// reset backoff so we reconnect in 1s, not 30s.
+			delay = reconnectDelayInit
 		}
 
 		select {
 		case <-ctx.Done():
 			return
-		case <-time.After(reconnectDelay):
+		case <-time.After(delay):
+		}
+
+		if regErr != nil {
+			// Only escalate backoff on repeated registration failures.
+			delay *= 2
+			if delay > reconnectDelayMax {
+				delay = reconnectDelayMax
+			}
 		}
 	}
 }
@@ -265,7 +285,6 @@ func (c *Connector) runSession(ctx context.Context) error {
 	if c.gatewayBase[:5] == "http:" {
 		wsURL = "ws" + c.gatewayBase[len("http"):] + wsPath + "?api_key=" + c.apiKey
 	}
-
 	conn, _, err := websocket.Dial(ctx, wsURL, nil)
 	if err != nil {
 		return fmt.Errorf("ws dial: %w", err)

@@ -8,8 +8,16 @@ import (
 	"path/filepath"
 	"strings"
 
+	"github.com/fabgoodvibes/owlrun/internal/buildinfo"
 	"github.com/google/uuid"
 	"gopkg.in/ini.v1"
+)
+
+// Beta testnet defaults — hardcoded into beta builds so operators can
+// start earning on testnet without any configuration.
+const (
+	betaGateway = "https://gateway.owlrun.me"
+	betaWallet  = "OwLt3st1111111111111111111111111111111111111" // testnet payout wallet
 )
 
 // Config is the fully-parsed owlrun.conf.
@@ -59,11 +67,22 @@ type DiskConfig struct {
 }
 
 // defaults returns a Config with all values set to the shipped defaults.
-// Every Owlrun install behaves correctly without a config file.
+// Beta builds include a testnet wallet so operators can start immediately.
 func defaults() Config {
+	gateway := "https://gateway.owlrun.me"
+	var wallet string
+
+	if buildinfo.IsBeta() {
+		gateway = betaGateway
+		wallet = betaWallet
+	}
+
 	return Config{
+		Account: AccountConfig{
+			Wallet: wallet,
+		},
 		Marketplace: MarketplaceConfig{
-			Gateway:       "https://gateway.owlrun.me",
+			Gateway:       gateway,
 			AllowOverride: true,
 		},
 		Inference: InferenceConfig{
@@ -80,6 +99,12 @@ func defaults() Config {
 			MinModelSpaceGB:  8,
 		},
 	}
+}
+
+// NeedsWallet returns true if the user hasn't set their own payout wallet.
+// This is the case when the wallet is empty or still the beta default.
+func NeedsWallet(cfg *Config) bool {
+	return cfg.Account.Wallet == "" || cfg.Account.Wallet == betaWallet
 }
 
 // EnsureNodeID returns the stable node UUID from cfg, generating and persisting

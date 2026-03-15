@@ -7,17 +7,15 @@ import (
 	"log"
 	"os"
 
+	"github.com/fabgoodvibes/owlrun/internal/buildinfo"
 	"github.com/fabgoodvibes/owlrun/internal/config"
 	"github.com/fabgoodvibes/owlrun/internal/dashboard"
 	"github.com/fabgoodvibes/owlrun/internal/tray"
 )
 
-// version is set at build time via -ldflags "-X main.version=..."
-var version = "dev"
-
 func main() {
 	if len(os.Args) > 1 && (os.Args[1] == "--version" || os.Args[1] == "-v") {
-		fmt.Println("owlrun", version)
+		fmt.Printf("owlrun %s (%s)\n", buildinfo.Version, buildinfo.Network)
 		os.Exit(0)
 	}
 
@@ -25,6 +23,10 @@ func main() {
 	cfg, err := config.Load()
 	if err != nil {
 		log.Printf("owlrun: config error: %v — using defaults", err)
+	}
+
+	if config.NeedsWallet(&cfg) {
+		log.Printf("owlrun: WARNING — no payout wallet configured. Edit %s and set [account] wallet = YOUR_SOLANA_PUBKEY", config.Path())
 	}
 
 	// Start the local dashboard server (port 8080).

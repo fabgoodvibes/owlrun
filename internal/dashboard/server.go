@@ -15,7 +15,13 @@ import (
 type Status struct {
 	NodeID  string `json:"node_id"`
 	Version string `json:"version"`
-	State   string `json:"state"` // "earning" | "idle" | "paused"
+	Network string `json:"network"` // "beta" | "production"
+	State   string `json:"state"`   // "earning" | "idle" | "paused"
+
+	Wallet struct {
+		Address string `json:"address"`
+		Warning string `json:"warning,omitempty"` // non-empty = user needs to set wallet
+	} `json:"wallet"`
 
 	GPU struct {
 		Name        string  `json:"name"`
@@ -134,6 +140,7 @@ const dashboardHTML = `<!DOCTYPE html>
   .dot-yellow { background: #eab308; box-shadow: 0 0 8px #eab30888; }
   .dot-grey   { background: #6b7280; }
   .dot-blue   { background: #3b82f6; box-shadow: 0 0 8px #3b82f688; }
+  .dot-red    { background: #ef4444; box-shadow: 0 0 8px #ef444488; }
   .bar-wrap { background: #2a2a38; border-radius: 4px; height: 6px; width: 100px; overflow: hidden; }
   .bar-fill { height: 100%; border-radius: 4px; transition: width 0.4s ease; }
   .bar-green  { background: #22c55e; }
@@ -145,10 +152,19 @@ const dashboardHTML = `<!DOCTYPE html>
   .connected { color: #22c55e; }
   .disconnected { color: #ef4444; }
   #updated { position: fixed; bottom: 16px; right: 20px; font-size: 11px; color: #333; }
+  .wallet-warn { background: #2d1f00; border: 1px solid #b45309; border-radius: 8px; padding: 14px 18px; margin-bottom: 16px; display: none; }
+  .wallet-warn .warn-title { color: #f59e0b; font-weight: 600; font-size: 13px; margin-bottom: 4px; }
+  .wallet-warn .warn-body { color: #d4a04a; font-size: 12px; line-height: 1.5; }
+  .wallet-warn code { background: #1a1a24; padding: 2px 6px; border-radius: 4px; font-size: 11px; color: #e2e2e8; }
+  .network-badge { display: inline-block; background: #b45309; color: #fff; font-size: 10px; font-weight: 600; padding: 2px 8px; border-radius: 4px; margin-left: 8px; text-transform: uppercase; vertical-align: middle; }
 </style>
 </head>
 <body>
-<h1>🦉 Owlrun <span id="version"></span></h1>
+<h1>🦉 Owlrun <span id="version"></span><span id="network-badge" class="network-badge" style="display:none"></span></h1>
+<div id="wallet-warn" class="wallet-warn">
+  <div class="warn-title">Wallet not configured</div>
+  <div class="warn-body" id="wallet-warn-body"></div>
+</div>
 <div class="grid">
 
   <div class="card">
@@ -242,6 +258,15 @@ const dashboardHTML = `<!DOCTYPE html>
     </div>
   </div>
 
+  <div class="card">
+    <div class="card-title">Status Colors</div>
+    <div class="stat"><span class="state-badge"><span class="dot dot-green"></span>Connected & earning</span></div>
+    <div class="stat"><span class="state-badge"><span class="dot dot-yellow"></span>Getting ready</span></div>
+    <div class="stat"><span class="state-badge"><span class="dot dot-blue"></span>Wallet not set</span></div>
+    <div class="stat"><span class="state-badge"><span class="dot dot-red"></span>Error</span></div>
+    <div class="stat"><span class="state-badge"><span class="dot dot-grey"></span>Paused</span></div>
+  </div>
+
 </div>
 <div id="updated"></div>
 
@@ -252,10 +277,12 @@ function fmtMB(mb) { return mb > 1024 ? fmtGB(mb) : mb + ' MB'; }
 
 function stateDisplay(state) {
   switch(state) {
-    case 'earning': return ['dot-green',  '● Earning'];
+    case 'earning': return ['dot-green',  '● Connected & earning'];
+    case 'ready':   return ['dot-yellow', '◑ Getting ready'];
     case 'idle':    return ['dot-yellow', '◑ Idle — waiting'];
+    case 'wallet':  return ['dot-blue',   '◇ Wallet not set'];
+    case 'error':   return ['dot-red',    '✕ Error'];
     case 'paused':  return ['dot-grey',   '○ Paused'];
-    case 'starting':return ['dot-blue',   '◌ Starting…'];
     default:        return ['dot-grey',   state];
   }
 }
@@ -263,6 +290,18 @@ function stateDisplay(state) {
 function update(d) {
   document.getElementById('version').textContent = 'v' + d.version;
   document.getElementById('node-id').textContent = 'node ' + d.node_id;
+
+  // Network badge (beta/production)
+  var nb = document.getElementById('network-badge');
+  if (d.network === 'beta') { nb.textContent = 'BETA'; nb.style.display = 'inline-block'; }
+  else { nb.style.display = 'none'; }
+
+  // Wallet warning
+  var ww = document.getElementById('wallet-warn');
+  if (d.wallet && d.wallet.warning) {
+    document.getElementById('wallet-warn-body').innerHTML = d.wallet.warning;
+    ww.style.display = 'block';
+  } else { ww.style.display = 'none'; }
 
   const [dotClass, label] = stateDisplay(d.state);
   document.getElementById('state-badge').innerHTML =
