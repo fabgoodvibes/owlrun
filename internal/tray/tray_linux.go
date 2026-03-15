@@ -202,7 +202,7 @@ func buildDaemon(cfg config.Config, dash *dashboard.Server) *sniDaemon {
 		cfg.Account.Wallet,
 		cfg.Account.ReferralCode,
 		cfg.Marketplace.Region,
-		"0.1.0",
+		buildinfo.Version,
 		info,
 		func() (int, int, int, float64) {
 			stats := monitor.Latest()

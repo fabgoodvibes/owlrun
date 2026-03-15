@@ -45,7 +45,8 @@ type GatewayStats struct {
 
 // wsMsg is the generic WebSocket message envelope used for all control traffic.
 type wsMsg struct {
-	Type string `json:"type"`
+	Type   string `json:"type"`
+	NodeID string `json:"node_id,omitempty"`
 
 	// Job assignment (gateway → node)
 	JobID          string `json:"job_id,omitempty"`
@@ -302,6 +303,9 @@ func (c *Connector) runSession(ctx context.Context) error {
 
 	log.Printf("owlrun: gateway: WS connected")
 
+	// Send first heartbeat immediately (don't wait 30s for ticker).
+	c.sendHeartbeat(ctx, conn)
+
 	// Heartbeat ticker.
 	hbCtx, hbCancel := context.WithCancel(ctx)
 	defer hbCancel()
@@ -333,6 +337,7 @@ func (c *Connector) sendHeartbeat(ctx context.Context, conn *websocket.Conn) {
 
 	msg := wsMsg{
 		Type:         "heartbeat",
+		NodeID:       c.nodeID,
 		GPUUtilPct:   utilPct,
 		VRAMFreeMB:   vramFree,
 		TempC:        tempC,

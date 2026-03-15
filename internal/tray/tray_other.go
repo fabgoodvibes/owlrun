@@ -64,7 +64,7 @@ func Run(cfg config.Config, dash *dashboard.Server) {
 		cfg.Account.Wallet,
 		cfg.Account.ReferralCode,
 		cfg.Marketplace.Region,
-		"0.1.0",
+		buildinfo.Version,
 		info,
 		func() (int, int, int, float64) {
 			stats := monitor.Latest()

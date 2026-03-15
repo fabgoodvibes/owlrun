@@ -16,7 +16,7 @@ set -euo pipefail
 
 # ── Constants ─────────────────────────────────────────────────────────────────
 
-DOWNLOAD_BASE="https://get.owlrun.me/download"
+DOWNLOAD_BASE="https://get.owlrun.me/download/beta/latest"
 INSTALL_DIR="$HOME/.local/bin"
 EXE_PATH="$INSTALL_DIR/owlrun"
 CONFIG_DIR="$HOME/.owlrun"
