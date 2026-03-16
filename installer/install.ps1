@@ -2,7 +2,8 @@
 <#
 .SYNOPSIS
   Owlrun Windows installer.
-  Usage: irm https://get.owlrun.me/install.ps1 | iex
+  Usage: irm https://get.owlrun.me/install.ps1 -OutFile install.ps1; .\install.ps1 -ApiKey owlr_prov_...
+  Or:    irm https://get.owlrun.me/install.ps1 | iex
 .DESCRIPTION
   - Detects GPU (NVIDIA / AMD)
   - Checks disk space
@@ -12,6 +13,12 @@
   - Registers a Task Scheduler logon task (no admin required)
   - Launches owlrun immediately
 #>
+
+param(
+  [string]$ApiKey = '',
+  [string]$Wallet = '',
+  [string]$Referral = ''
+)
 
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
@@ -273,14 +280,20 @@ $apiKey = ''
 $wallet = ''
 
 if (-not (Test-Path $CONFIG_FILE)) {
-  Write-Host ""
-  Write-Host "  Create a free account at https://dashboard.owlrun.me to get your API key." -ForegroundColor DarkCyan
-  Write-Host "  You can skip this now and add it later by editing $CONFIG_FILE" -ForegroundColor DarkGray
-  Write-Host ""
-  $apiKey   = Read-Host "  API key (press Enter to skip)"
-  $wallet   = Read-Host "  Solana wallet address for payouts (press Enter to skip)"
-  $referral = Read-Host "  Referral code (press Enter to skip)"
-  Write-DefaultConfig -NodeId $nodeId -ApiKey $apiKey.Trim() -Wallet $wallet.Trim() -ReferralCode $referral.Trim()
+  if ($ApiKey) {
+    # Key provided via -ApiKey param — skip interactive prompts
+    Write-OK "API key provided via -ApiKey"
+    Write-DefaultConfig -NodeId $nodeId -ApiKey $ApiKey.Trim() -Wallet $Wallet.Trim() -ReferralCode $Referral.Trim()
+  } else {
+    Write-Host ""
+    Write-Host "  Get your provider key at https://owlrun.me — or skip and add it later." -ForegroundColor DarkCyan
+    Write-Host "  Config file: $CONFIG_FILE" -ForegroundColor DarkGray
+    Write-Host ""
+    $apiKey   = Read-Host "  Provider key (press Enter to skip)"
+    $wallet   = Read-Host "  Solana wallet address for payouts (press Enter to skip)"
+    $referral = Read-Host "  Referral code (press Enter to skip)"
+    Write-DefaultConfig -NodeId $nodeId -ApiKey $apiKey.Trim() -Wallet $wallet.Trim() -ReferralCode $referral.Trim()
+  }
 } else {
   Write-OK "Existing config preserved at $CONFIG_FILE"
 }

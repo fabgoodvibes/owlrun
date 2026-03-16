@@ -24,6 +24,21 @@ CONFIG_FILE="$CONFIG_DIR/owlrun.conf"
 MIN_DISK_GB=8
 WARN_DISK_PCT=30
 
+# ── CLI args ──────────────────────────────────────────────────────────────────
+
+CLI_KEY=""
+CLI_WALLET=""
+CLI_REFERRAL=""
+
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --key)      CLI_KEY="$2"; shift 2 ;;
+    --wallet)   CLI_WALLET="$2"; shift 2 ;;
+    --referral) CLI_REFERRAL="$2"; shift 2 ;;
+    *) shift ;;
+  esac
+done
+
 # ── Colours ───────────────────────────────────────────────────────────────────
 
 RED='\033[0;31m'; YELLOW='\033[1;33m'; GREEN='\033[0;32m'
@@ -316,14 +331,20 @@ fi
 [[ -z "$NODE_ID" ]] && NODE_ID=$(gen_uuid)
 
 if [[ ! -f "$CONFIG_FILE" ]]; then
-  echo ""
-  echo -e "  ${CYAN}Create a free account at https://dashboard.owlrun.me to get your API key.${RESET}"
-  echo -e "  You can skip this and add it later by editing $CONFIG_FILE"
-  echo ""
-  read -rp "  API key (press Enter to skip): " API_KEY
-  read -rp "  Solana wallet for payouts (press Enter to skip): " WALLET
-  read -rp "  Referral code (press Enter to skip): " REFERRAL
-  write_config "$NODE_ID" "${API_KEY:-}" "${WALLET:-}" "${REFERRAL:-}"
+  if [[ -n "$CLI_KEY" ]]; then
+    # Key provided via CLI — skip interactive prompts
+    ok "API key provided via --key"
+    write_config "$NODE_ID" "$CLI_KEY" "${CLI_WALLET:-}" "${CLI_REFERRAL:-}"
+  else
+    echo ""
+    echo -e "  ${CYAN}Get your provider key at https://owlrun.me — or skip and add it later.${RESET}"
+    echo -e "  Config file: $CONFIG_FILE"
+    echo ""
+    read -rp "  Provider key (press Enter to skip): " API_KEY
+    read -rp "  Solana wallet for payouts (press Enter to skip): " WALLET
+    read -rp "  Referral code (press Enter to skip): " REFERRAL
+    write_config "$NODE_ID" "${API_KEY:-}" "${WALLET:-}" "${REFERRAL:-}"
+  fi
 else
   ok "Existing config preserved"
 fi
