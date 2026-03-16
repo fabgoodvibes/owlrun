@@ -129,4 +129,4 @@ jobs:
         with:
           apiToken: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           accountId: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
-          command: pages deploy pages --project-name=owlrun-cdn
+          command: pages deploy pages --project-name=owlrun-cdn --branch=main
