@@ -1,0 +1,141 @@
+# Owlrun
+
+Earn money from your idle GPU by serving AI inference.
+
+Owlrun is a lightweight agent that runs silently in your system tray. When your machine is idle, it serves AI inference jobs through the [Owlrun Gateway](https://owlrun.me) and earns you money. When you come back, it pauses automatically.
+
+## Install
+
+**Windows** (PowerShell):
+```powershell
+irm https://get.owlrun.me/install.ps1 | iex
+```
+
+**Linux / macOS** (bash):
+```bash
+curl -fsSL https://get.owlrun.me/install.sh | bash
+```
+
+The installer detects your GPU, installs [Ollama](https://ollama.com) if needed, downloads the Owlrun binary, writes a default config, and registers auto-start.
+
+## How it works
+
+```
+Your machine                           Owlrun Gateway                    Buyer
++-----------+    WebSocket control    +----------------+    HTTPS API   +-------+
+|  Owlrun   | ---------------------->|   gateway.     |<---------------|  App  |
+|  + Ollama | <------- jobs ---------|   owlrun.me    |--- response -->|       |
++-----------+    HTTP/2 proxy         +----------------+               +-------+
+```
+
+1. Owlrun connects to the gateway over WebSocket and registers your GPU specs
+2. When a buyer sends an inference request, the gateway pushes a job to your node
+3. Your node fetches the buyer's request, forwards it to local Ollama, and streams the response back
+4. You earn 91% of the job revenue; the gateway takes a single-digit routing margin
+5. Payouts are immediate — every microtransaction settles instantly to your wallet. We never custody your funds. (Bitcoin Lightning is WIP)
+
+**Volume tiers** reward high-throughput nodes with a bigger share:
+
+| Tier | Monthly tokens | You keep |
+|------|---------------|----------|
+| Starter | < 1M | 91% |
+| Pro | 1M – 10M | 93% |
+| Elite | 10M – 100M | 95% |
+| Ultra | 100M+ | 96% |
+
+**Affiliate program**: share your referral code (`owlr_ref_...`) — you earn 20% of the gateway's cut on every node you refer, forever. Referral payouts settle immediately alongside each job. The referred node's payout is never reduced.
+
+## Requirements
+
+- **GPU**: NVIDIA (any with CUDA), AMD (ROCm on Linux, WMI on Windows), or Apple Silicon
+- **Disk**: 8 GB+ free (for AI model downloads)
+- **OS**: Windows 10+, macOS 12+, or Linux (x86_64 / arm64)
+- **Network**: outbound HTTPS + WSS to `gateway.owlrun.me`
+
+CPU-only mode is supported for small models with lower earnings.
+
+## Configuration
+
+Config file: `~/.owlrun/owlrun.conf`
+
+```ini
+[account]
+api_key       = owlr_prov_...      # From https://owlrun.me
+wallet        = <solana-address>   # Payout address
+referral_code =                    # Optional affiliate code (owlr_ref_...)
+
+[marketplace]
+gateway        = https://gateway.owlrun.me
+region         = auto             # auto-detected from IP, or set manually
+
+[inference]
+model_auto     = true             # Auto-select best model for your VRAM
+max_vram_pct   = 80
+
+[idle]
+trigger_minutes = 10              # Start earning after 10 min idle
+gpu_threshold   = 15              # Only earn if GPU usage < 15%
+watch_processes = true            # Pause when games are running
+
+[disk]
+warn_threshold_pct = 30
+min_model_space_gb = 8
+```
+
+See [`owlrun.conf.example`](owlrun.conf.example) for all options.
+
+## Dashboard
+
+Once running, open [http://localhost:19131](http://localhost:19131) for a live dashboard showing GPU stats, earnings, gateway status, and disk usage.
+
+## Build from source
+
+Requires Go 1.22+.
+
+```bash
+# Native build
+make build
+
+# All platforms
+make build-all
+
+# Run tests
+make test
+```
+
+Or manually:
+
+```bash
+CGO_ENABLED=0 go build -ldflags="-s -w -X main.version=dev" -o dist/owlrun ./cmd/owlrun
+```
+
+Cross-compile for Windows from Linux/macOS:
+
+```bash
+GOOS=windows GOARCH=amd64 CGO_ENABLED=0 go build -o dist/owlrun.exe ./cmd/owlrun
+```
+
+## Project structure
+
+```
+owlrun/
+  cmd/owlrun/           Entry point
+  internal/
+    config/             INI config loader
+    tray/               System tray UI (Windows, Linux, macOS)
+    idle/               Idle detection + game scanner
+    gpu/                GPU detection and live monitoring
+    disk/               Disk space checks
+    inference/          Ollama lifecycle manager
+    earnings/           SQLite earnings tracker
+    marketplace/        Gateway connector (WebSocket + HTTP/2 proxy)
+    dashboard/          Local web UI on localhost:19131
+    assets/             Embedded icon files
+  installer/
+    install.ps1         Windows installer
+    install.sh          Linux/macOS installer
+```
+
+## License
+
+[MIT](LICENSE)
