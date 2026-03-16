@@ -130,6 +130,7 @@ type sniDaemon struct {
 	manuallyPaused bool
 	starting       bool
 	model          string
+	jobMode        string // "never", "idle", "always"
 
 	// D-Bus fields — nil in headless mode.
 	conn      *dbus.Conn
@@ -187,6 +188,7 @@ func buildDaemon(cfg config.Config, dash *dashboard.Server) *sniDaemon {
 		tracker:    tracker,
 		ollamaMgr:  inference.New(info),
 		dash:       dash,
+		jobMode:    cfg.Idle.JobMode,
 		iconGreen:  safeIco(assets.IconGreen),
 		iconYellow: safeIco(assets.IconYellow),
 		iconGrey:   safeIco(assets.IconGrey),
@@ -344,6 +346,7 @@ func (d *sniDaemon) applyStateLocked() {
 	} else {
 		d.menuObj.toggleLabel = "Pause"
 	}
+	d.menuObj.jobMode = d.jobMode
 	d.menuRev++
 	_ = d.conn.Emit(menuPath, menuIface+".LayoutUpdated", d.menuRev, int32(0))
 }
@@ -367,6 +370,7 @@ type dbusMenu struct {
 	d           *sniDaemon
 	statusLabel string
 	toggleLabel string
+	jobMode     string // synced from sniDaemon on layout build
 }
 
 func (m *dbusMenu) GetLayout(parentId, recursionDepth int32, propertyNames []string) (uint32, layoutItem, *dbus.Error) {
@@ -374,7 +378,9 @@ func (m *dbusMenu) GetLayout(parentId, recursionDepth int32, propertyNames []str
 	rev := m.d.menuRev
 	sl := m.statusLabel
 	tl := m.toggleLabel
+	jm := m.jobMode
 	snap := m.d.tracker.Get()
+	trigMin := m.d.cfg.Idle.TriggerMinutes
 	m.d.mu.Unlock()
 
 	sep := func(id int32) dbus.Variant {
@@ -392,6 +398,35 @@ func (m *dbusMenu) GetLayout(parentId, recursionDepth int32, propertyNames []str
 			},
 		})
 	}
+	radioItem := func(id int32, label string, checked bool) dbus.Variant {
+		state := int32(0)
+		if checked {
+			state = 1
+		}
+		return dbus.MakeVariant(layoutItem{
+			ID: id,
+			Props: map[string]dbus.Variant{
+				"label":        dbus.MakeVariant(label),
+				"enabled":      dbus.MakeVariant(true),
+				"toggle-type":  dbus.MakeVariant("radio"),
+				"toggle-state": dbus.MakeVariant(state),
+			},
+		})
+	}
+
+	// Job mode submenu (ID 20 = parent, 21-23 = children)
+	jobModeParent := dbus.MakeVariant(layoutItem{
+		ID: 20,
+		Props: map[string]dbus.Variant{
+			"label":       dbus.MakeVariant("Accept Jobs"),
+			"children-display": dbus.MakeVariant("submenu"),
+		},
+		Children: []dbus.Variant{
+			radioItem(21, "Never", jm == "never"),
+			radioItem(22, fmt.Sprintf("After idle %dm", trigMin), jm == "idle"),
+			radioItem(23, "Always", jm == "always"),
+		},
+	})
 
 	root := layoutItem{
 		ID:    0,
@@ -404,6 +439,7 @@ func (m *dbusMenu) GetLayout(parentId, recursionDepth int32, propertyNames []str
 			sep(5),
 			item(6, "Open Dashboard", true),
 			item(7, tl, true),
+			jobModeParent,
 			sep(8),
 			item(10, "🟢 Green  — Connected & earning", false),
 			item(11, "🟡 Yellow — Getting ready", false),
@@ -428,6 +464,12 @@ func (m *dbusMenu) Event(id int32, eventId string, data dbus.Variant, timestamp 
 		m.d.togglePause()
 	case 9:
 		_ = syscall.Kill(os.Getpid(), syscall.SIGTERM)
+	case 21:
+		m.d.setJobMode("never")
+	case 22:
+		m.d.setJobMode("idle")
+	case 23:
+		m.d.setJobMode("always")
 	}
 	return nil
 }
@@ -458,6 +500,22 @@ func (d *sniDaemon) togglePause() {
 	}
 }
 
+func (d *sniDaemon) setJobMode(mode string) {
+	d.mu.Lock()
+	old := d.jobMode
+	d.jobMode = mode
+	wasEarning := d.st == linuxEarning || d.st == linuxReady || d.st == linuxMissingWallet
+	if mode == "never" && wasEarning {
+		d.st = linuxIdle
+	}
+	d.applyStateLocked()
+	d.mu.Unlock()
+	log.Printf("owlrun: job mode changed: %s → %s", old, mode)
+	if mode == "never" && wasEarning {
+		go d.stopEarning()
+	}
+}
+
 func (d *sniDaemon) idleLoop() {
 	d.check()
 	ticker := time.NewTicker(30 * time.Second)
@@ -471,14 +529,21 @@ func (d *sniDaemon) check() {
 	d.mu.Lock()
 	paused := d.manuallyPaused
 	st := d.st
+	mode := d.jobMode
 	d.mu.Unlock()
 
 	if paused {
 		return
 	}
 
+	if mode == "never" {
+		return
+	}
+
 	if st == linuxEarning || st == linuxReady || st == linuxMissingWallet {
-		// Ollama is running. Only stop if the user returns or a game launches.
+		if mode == "always" {
+			return
+		}
 		userBack := idle.IdleDuration() < time.Duration(d.cfg.Idle.TriggerMinutes)*time.Minute
 		gameRunning := d.cfg.Idle.WatchProcesses && idle.IsGameRunning()
 		if userBack || gameRunning {
@@ -491,13 +556,12 @@ func (d *sniDaemon) check() {
 		return
 	}
 
-	// Not currently earning — use full idle check (including GPU threshold).
-	systemIdle := idle.IsSystemIdle(d.cfg.Idle, d.monitor.UtilizationPct())
+	shouldStart := mode == "always" || idle.IsSystemIdle(d.cfg.Idle, d.monitor.UtilizationPct())
 
 	d.mu.Lock()
 	defer d.mu.Unlock()
 
-	if systemIdle && d.st == linuxIdle && !d.starting {
+	if shouldStart && d.st == linuxIdle && !d.starting {
 		d.starting = true
 		go d.startEarning()
 	}

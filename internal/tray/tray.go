@@ -50,6 +50,7 @@ type Agent struct {
 	manuallyPaused bool // true = user explicitly paused; overrides idle monitor
 	starting       bool // true = Ollama startup goroutine is in progress
 	model          string // currently loaded Ollama model tag
+	jobMode        string // "never", "idle", "always"
 	cfg            config.Config
 	nodeID         string
 	gpuInfo        gpu.Info
@@ -68,6 +69,12 @@ type Agent struct {
 	mWalletWarn *systray.MenuItem // shown when wallet not configured
 	mDiskWarn   *systray.MenuItem // shown only when disk is low
 	mQuit       *systray.MenuItem
+
+	// Job mode submenu
+	mJobMode      *systray.MenuItem
+	mJobNever     *systray.MenuItem
+	mJobIdle      *systray.MenuItem
+	mJobAlways    *systray.MenuItem
 }
 
 // Run detects the GPU, then starts the system tray. Blocks until Quit.
@@ -103,6 +110,7 @@ func Run(cfg config.Config, dash *dashboard.Server) {
 		gpuInfo:    info,
 		gpuMonitor: monitor,
 		state:      StateIdle,
+		jobMode:    cfg.Idle.JobMode,
 		tracker:    tracker,
 		ollamaMgr:  inference.New(info),
 		gateway:    gw,
@@ -140,6 +148,14 @@ func (a *Agent) onReady() {
 	// Actions
 	a.mToggle = systray.AddMenuItem(a.toggleLabel(), "Pause or resume Owlrun")
 	a.mDashboard = systray.AddMenuItem("Open Dashboard", "Open localhost:8080")
+
+	// Job mode submenu
+	a.mJobMode = systray.AddMenuItem("Accept Jobs", "")
+	a.mJobNever = a.mJobMode.AddSubMenuItem("Never", "Never accept jobs")
+	a.mJobIdle = a.mJobMode.AddSubMenuItem(fmt.Sprintf("After idle %dm", a.cfg.Idle.TriggerMinutes), "Accept jobs after idle timeout")
+	a.mJobAlways = a.mJobMode.AddSubMenuItem("Always", "Always accept jobs")
+	a.applyJobModeChecks()
+
 	systray.AddSeparator()
 	a.mDiskWarn = systray.AddMenuItem("", "")
 	a.mDiskWarn.Disable()
@@ -187,6 +203,12 @@ func (a *Agent) handleClicks() {
 			a.togglePause()
 		case <-a.mDashboard.ClickedCh:
 			openBrowser("http://localhost:8080")
+		case <-a.mJobNever.ClickedCh:
+			a.setJobMode("never")
+		case <-a.mJobIdle.ClickedCh:
+			a.setJobMode("idle")
+		case <-a.mJobAlways.ClickedCh:
+			a.setJobMode("always")
 		case <-a.mQuit.ClickedCh:
 			systray.Quit()
 		}
@@ -229,10 +251,16 @@ func (a *Agent) idleMonitorLoop() {
 func (a *Agent) checkAndUpdateState() {
 	a.mu.Lock()
 	paused := a.manuallyPaused
+	mode := a.jobMode
 	a.mu.Unlock()
 
 	if paused {
 		return // user has manually paused; do not touch state
+	}
+
+	// "never" mode: never start earning.
+	if mode == "never" {
+		return
 	}
 
 	a.mu.Lock()
@@ -240,6 +268,10 @@ func (a *Agent) checkAndUpdateState() {
 	a.mu.Unlock()
 
 	if st == StateEarning || st == StateReady || st == StateMissingWallet {
+		// In "always" mode, never stop due to user activity.
+		if mode == "always" {
+			return
+		}
 		// Ollama is running. Only stop if the user returns or a game launches.
 		userBack := idle.IdleDuration() < time.Duration(a.cfg.Idle.TriggerMinutes)*time.Minute
 		gameRunning := a.cfg.Idle.WatchProcesses && idle.IsGameRunning()
@@ -253,13 +285,13 @@ func (a *Agent) checkAndUpdateState() {
 		return
 	}
 
-	// Not currently earning — use full idle check (including GPU threshold).
-	systemIdle := idle.IsSystemIdle(a.cfg.Idle, a.gpuMonitor.UtilizationPct())
+	// "always" mode: skip idle check, start immediately.
+	shouldStart := mode == "always" || idle.IsSystemIdle(a.cfg.Idle, a.gpuMonitor.UtilizationPct())
 
 	a.mu.Lock()
 	defer a.mu.Unlock()
 
-	if systemIdle && a.state == StateIdle && !a.starting {
+	if shouldStart && a.state == StateIdle && !a.starting {
 		a.starting = true
 		go a.startEarning()
 	}
@@ -467,6 +499,49 @@ func (a *Agent) checkDisk(showDialogIfCritical bool) {
 	default:
 		// Healthy — hide the warning item.
 		a.mDiskWarn.Hide()
+	}
+}
+
+// setJobMode switches the runtime job acceptance mode and updates the tray.
+func (a *Agent) setJobMode(mode string) {
+	a.mu.Lock()
+	old := a.jobMode
+	a.jobMode = mode
+	a.mu.Unlock()
+	a.applyJobModeChecks()
+	log.Printf("owlrun: job mode changed: %s → %s", old, mode)
+
+	// If switching to "never", stop earning immediately.
+	if mode == "never" && (old == "idle" || old == "always") {
+		a.mu.Lock()
+		wasEarning := a.state == StateEarning || a.state == StateReady || a.state == StateMissingWallet
+		if wasEarning {
+			a.state = StateIdle
+			a.refreshMenuLocked()
+		}
+		a.mu.Unlock()
+		if wasEarning {
+			go a.stopEarning()
+		}
+	}
+}
+
+// applyJobModeChecks updates the check marks on the job mode submenu.
+func (a *Agent) applyJobModeChecks() {
+	a.mu.Lock()
+	mode := a.jobMode
+	a.mu.Unlock()
+
+	a.mJobNever.Uncheck()
+	a.mJobIdle.Uncheck()
+	a.mJobAlways.Uncheck()
+	switch mode {
+	case "never":
+		a.mJobNever.Check()
+	case "always":
+		a.mJobAlways.Check()
+	default:
+		a.mJobIdle.Check()
 	}
 }
 

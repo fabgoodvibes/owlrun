@@ -56,9 +56,10 @@ type InferenceConfig struct {
 }
 
 type IdleConfig struct {
-	TriggerMinutes int  // no-input duration before earning starts
-	GPUThreshold   int  // GPU utilisation % below which earning is allowed
-	WatchProcesses bool // pause when game processes detected
+	TriggerMinutes int    // no-input duration before earning starts
+	GPUThreshold   int    // GPU utilisation % below which earning is allowed
+	WatchProcesses bool   // pause when game processes detected
+	JobMode        string // "never", "idle" (default), or "always"
 }
 
 type DiskConfig struct {
@@ -93,6 +94,7 @@ func defaults() Config {
 			TriggerMinutes: 10,
 			GPUThreshold:   15,
 			WatchProcesses: true,
+			JobMode:        "idle",
 		},
 		Disk: DiskConfig{
 			WarnThresholdPct: 30,
@@ -188,6 +190,9 @@ func Load() (Config, error) {
 		cfg.Idle.TriggerMinutes = sec.Key("trigger_minutes").MustInt(10)
 		cfg.Idle.GPUThreshold = sec.Key("gpu_threshold").MustInt(15)
 		cfg.Idle.WatchProcesses = sec.Key("watch_processes").MustBool(true)
+		if jm := sec.Key("job_mode").String(); jm == "never" || jm == "always" {
+			cfg.Idle.JobMode = jm
+		}
 	}
 
 	if sec, err := f.GetSection("disk"); err == nil {

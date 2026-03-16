@@ -9,6 +9,7 @@ package marketplace
 import (
 	"log"
 
+	"github.com/fabgoodvibes/owlrun/internal/geo"
 	"github.com/fabgoodvibes/owlrun/internal/gpu"
 )
 
@@ -37,6 +38,11 @@ func New(
 ) *Router {
 	if gatewayBase == "" {
 		gatewayBase = DefaultGatewayBase
+	}
+
+	// Resolve region once: if the config says "auto" or is empty, detect from IP.
+	if region == "" || region == "auto" {
+		region = geo.DetectRegion()
 	}
 
 	c := NewConnector(gatewayBase, proxyBase, apiKey, nodeID, wallet, getStats, onComplete)

@@ -44,9 +44,10 @@ type daemon struct {
 	ollamaMgr *inference.Manager
 	gateway   *marketplace.Router
 
-	mu    sync.Mutex
-	st    state
-	model string
+	mu      sync.Mutex
+	st      state
+	model   string
+	jobMode string // "never", "idle", "always"
 }
 
 // Run starts Owlrun in headless daemon mode. Blocks until SIGINT/SIGTERM.
@@ -83,6 +84,7 @@ func Run(cfg config.Config, dash *dashboard.Server) {
 		tracker:   tracker,
 		ollamaMgr: inference.New(info),
 		gateway:   gw,
+		jobMode:   cfg.Idle.JobMode,
 	}
 
 	if dash != nil {
@@ -120,12 +122,19 @@ func (d *daemon) idleLoop() {
 func (d *daemon) check() {
 	d.mu.Lock()
 	st := d.st
+	mode := d.jobMode
 	d.mu.Unlock()
+
+	if mode == "never" {
+		return
+	}
 
 	gpuUtil := d.monitor.UtilizationPct()
 
 	if st == stateEarning || st == stateReady || st == stateMissingWallet {
-		// Ollama is running. Only stop if the user returns or a game launches.
+		if mode == "always" {
+			return
+		}
 		userBack := idle.IdleDuration() < time.Duration(d.cfg.Idle.TriggerMinutes)*time.Minute
 		gameRunning := d.cfg.Idle.WatchProcesses && idle.IsGameRunning()
 		if userBack || gameRunning {
@@ -138,11 +147,9 @@ func (d *daemon) check() {
 		return
 	}
 
-	// Not currently earning — use the full idle check (including GPU threshold)
-	// to avoid starting if someone else is using the GPU.
-	systemIdle := idle.IsSystemIdle(d.cfg.Idle, gpuUtil)
+	shouldStart := mode == "always" || idle.IsSystemIdle(d.cfg.Idle, gpuUtil)
 
-	if systemIdle && st == stateIdle {
+	if shouldStart && st == stateIdle {
 		d.mu.Lock()
 		d.st = stateStarting
 		d.mu.Unlock()
