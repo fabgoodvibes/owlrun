@@ -5,7 +5,7 @@ import "time"
 
 // Info holds static GPU metadata detected at startup.
 type Info struct {
-	Vendor        string  // "nvidia" | "amd" | "none"
+	Vendor        string  // "nvidia" | "amd" | "apple" | "none"
 	Name          string  // e.g. "NVIDIA GeForce RTX 4090"
 	VRAMTotalMB   int     // Total VRAM in MB
 	VRAMFreeMB    int     // Free VRAM at detection time

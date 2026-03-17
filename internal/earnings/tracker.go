@@ -115,6 +115,15 @@ func (t *Tracker) Close() {
 }
 
 func owlrunDir() string {
-	home, _ := os.UserHomeDir()
+	home, err := os.UserHomeDir()
+	if err != nil || home == "" {
+		// Fallback: check $HOME explicitly (launchd on macOS may not
+		// propagate it to os.UserHomeDir in all contexts).
+		home = os.Getenv("HOME")
+	}
+	if home == "" {
+		// Last resort — use temp dir so we don't write to a read-only CWD.
+		home = os.TempDir()
+	}
 	return filepath.Join(home, ".owlrun")
 }

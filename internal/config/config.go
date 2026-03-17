@@ -138,7 +138,13 @@ func persistNodeID(id string) {
 
 // Path returns the default config file location: ~/.owlrun/owlrun.conf
 func Path() string {
-	home, _ := os.UserHomeDir()
+	home, err := os.UserHomeDir()
+	if err != nil || home == "" {
+		home = os.Getenv("HOME")
+	}
+	if home == "" {
+		home = os.TempDir()
+	}
 	return filepath.Join(home, ".owlrun", "owlrun.conf")
 }
 
