@@ -106,7 +106,7 @@ func TestBuildRegistration_JSONRoundtrip(t *testing.T) {
 }
 
 func TestDefaultGatewayBase(t *testing.T) {
-	if DefaultGatewayBase != "https://gateway.owlrun.me" {
-		t.Errorf("DefaultGatewayBase = %q, want https://gateway.owlrun.me", DefaultGatewayBase)
+	if DefaultGatewayBase != "https://node.owlrun.me" {
+		t.Errorf("DefaultGatewayBase = %q, want https://node.owlrun.me", DefaultGatewayBase)
 	}
 }

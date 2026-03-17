@@ -184,7 +184,7 @@ wallet        = $wallet
 referral_code = $referral
 
 [marketplace]
-gateway        = https://gateway.owlrun.me
+gateway        = https://node.owlrun.me
 allow_override = true
 
 [inference]

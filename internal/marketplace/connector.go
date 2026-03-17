@@ -83,7 +83,7 @@ type wsMsg struct {
 // relaying gateway stats back to the dashboard.
 type Connector struct {
 	proxyBase   string // e.g. "https://node.owlrun.me" — bypasses Cloudflare for HTTP/2 full-duplex proxy; falls back to gatewayBase if empty
-	gatewayBase string // e.g. "https://gateway.owlrun.me"
+	gatewayBase string // e.g. "https://node.owlrun.me"
 	apiKey      string
 	nodeID      string
 	wallet      string

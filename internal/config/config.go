@@ -16,7 +16,7 @@ import (
 // Beta testnet defaults — hardcoded into beta builds so operators can
 // start earning on testnet without any configuration.
 const (
-	betaGateway = "https://gateway.owlrun.me"
+	betaGateway = "https://node.owlrun.me"
 	betaWallet  = "OwLt3st1111111111111111111111111111111111111" // testnet payout wallet
 )
 
@@ -70,7 +70,7 @@ type DiskConfig struct {
 // defaults returns a Config with all values set to the shipped defaults.
 // Beta builds include a testnet wallet so operators can start immediately.
 func defaults() Config {
-	gateway := "https://gateway.owlrun.me"
+	gateway := "https://node.owlrun.me"
 	var wallet string
 
 	if buildinfo.IsBeta() {

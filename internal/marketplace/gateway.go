@@ -11,7 +11,7 @@ import (
 
 // DefaultGatewayBase is the hardcoded default — the Owlrun Gateway.
 // MIT-licensed: users can override in owlrun.conf, but 99% won't.
-const DefaultGatewayBase = "https://gateway.owlrun.me"
+const DefaultGatewayBase = "https://node.owlrun.me"
 
 // registerPayload is the JSON body sent to POST /v1/gateway/register.
 type registerPayload struct {

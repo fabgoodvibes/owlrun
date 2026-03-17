@@ -50,7 +50,7 @@ Your machine                           Owlrun Gateway                    Buyer
 - **GPU**: NVIDIA (any with CUDA), AMD (ROCm on Linux, WMI on Windows), or Apple Silicon
 - **Disk**: 8 GB+ free (for AI model downloads)
 - **OS**: Windows 10+, macOS 12+, or Linux (x86_64 / arm64)
-- **Network**: outbound HTTPS + WSS to `gateway.owlrun.me`
+- **Network**: outbound HTTPS + WSS to `node.owlrun.me`
 
 CPU-only mode is supported for small models with lower earnings.
 
@@ -65,7 +65,7 @@ wallet        = <solana-address>   # Payout address
 referral_code =                    # Optional affiliate code (owlr_ref_...)
 
 [marketplace]
-gateway        = https://gateway.owlrun.me
+gateway        = https://node.owlrun.me
 region         = auto             # auto-detected from IP, or set manually
 
 [inference]

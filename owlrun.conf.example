@@ -13,7 +13,7 @@ referral_code =                     # Optional: affiliate referral code (owlr_re
 # The Owlrun Gateway is the default and only connection point for this node.
 # The gateway handles all buyer routing and failover internally.
 # MIT spirit: you can point this at any OpenAI-compatible gateway.
-gateway          = https://gateway.owlrun.me
+gateway          = https://node.owlrun.me
 allow_override   = true
 # region         = auto           # Self-reported region (e.g. us-east, eu-west). Leave empty or "auto" for gateway to detect from IP.
 
