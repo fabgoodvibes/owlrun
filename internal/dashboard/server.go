@@ -9,6 +9,8 @@ import (
 	"net"
 	"net/http"
 	"sync/atomic"
+
+	"github.com/fabgoodvibes/owlrun/internal/earnings"
 )
 
 // Status is the full snapshot returned by GET /api/status.
@@ -67,6 +69,7 @@ type StatusProvider func() Status
 type Server struct {
 	port     int
 	provider atomic.Pointer[StatusProvider]
+	tracker  atomic.Pointer[earnings.Tracker]
 }
 
 // New creates a dashboard Server on the given port.
@@ -83,12 +86,18 @@ func (s *Server) SetProvider(p StatusProvider) {
 	s.provider.Store(&p)
 }
 
+// SetTracker wires the earnings database for history chart queries.
+func (s *Server) SetTracker(t *earnings.Tracker) {
+	s.tracker.Store(t)
+}
+
 // Start launches the HTTP server in the background.
 // The listener is bound before returning so the port is ready for connections.
 func (s *Server) Start() error {
 	mux := http.NewServeMux()
 	mux.HandleFunc("/", s.handleIndex)
 	mux.HandleFunc("/api/status", s.handleStatus)
+	mux.HandleFunc("/api/history", s.handleHistory)
 	ln, err := net.Listen("tcp", fmt.Sprintf("127.0.0.1:%d", s.port))
 	if err != nil {
 		return err
@@ -109,6 +118,33 @@ func (s *Server) handleStatus(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
 	w.Header().Set("Access-Control-Allow-Origin", "*")
 	json.NewEncoder(w).Encode(s.getStatus())
+}
+
+func (s *Server) handleHistory(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Content-Type", "application/json")
+	w.Header().Set("Access-Control-Allow-Origin", "*")
+
+	t := s.tracker.Load()
+	if t == nil {
+		json.NewEncoder(w).Encode(map[string]any{"period": "", "buckets": []any{}})
+		return
+	}
+
+	period := r.URL.Query().Get("period")
+	switch period {
+	case "24h", "7d", "30d", "1y":
+	default:
+		period = "24h"
+	}
+
+	buckets := t.History(period)
+	if buckets == nil {
+		buckets = []earnings.HistoryBucket{}
+	}
+	json.NewEncoder(w).Encode(map[string]any{
+		"period":  period,
+		"buckets": buckets,
+	})
 }
 
 func (s *Server) handleIndex(w http.ResponseWriter, r *http.Request) {
@@ -152,6 +188,16 @@ const dashboardHTML = `<!DOCTYPE html>
   .connected { color: #22c55e; }
   .disconnected { color: #ef4444; }
   #updated { position: fixed; bottom: 16px; right: 20px; font-size: 11px; color: #333; }
+  .charts-section { margin-top: 24px; padding-bottom: 40px; }
+  .tab-bar { display: flex; gap: 0; margin-bottom: 16px; }
+  .tab-bar button { background: #1a1a24; border: 1px solid #2a2a38; color: #888; padding: 8px 18px; font-size: 12px; font-weight: 600; cursor: pointer; transition: all 0.2s; }
+  .tab-bar button:first-child { border-radius: 6px 0 0 6px; }
+  .tab-bar button:last-child { border-radius: 0 6px 6px 0; }
+  .tab-bar button.active { background: #2a2a38; color: #e2e2e8; border-color: #3a3a4a; }
+  .chart-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; }
+  @media (max-width: 600px) { .chart-grid { grid-template-columns: 1fr; } }
+  .chart-card { background: #1a1a24; border: 1px solid #2a2a38; border-radius: 10px; padding: 18px; }
+  .chart-card .card-title { font-size: 11px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.8px; color: #666; margin-bottom: 14px; }
   .wallet-warn { background: #2d1f00; border: 1px solid #b45309; border-radius: 8px; padding: 14px 18px; margin-bottom: 16px; display: none; }
   .wallet-warn .warn-title { color: #f59e0b; font-weight: 600; font-size: 13px; margin-bottom: 4px; }
   .wallet-warn .warn-body { color: #d4a04a; font-size: 12px; line-height: 1.5; }
@@ -268,6 +314,26 @@ const dashboardHTML = `<!DOCTYPE html>
   </div>
 
 </div>
+
+<div class="charts-section" id="charts-section" style="display:none">
+  <div class="tab-bar" id="period-tabs">
+    <button data-period="24h" class="active">24h</button>
+    <button data-period="7d">7d</button>
+    <button data-period="30d">30d</button>
+    <button data-period="1y">1y</button>
+  </div>
+  <div class="chart-grid">
+    <div class="chart-card">
+      <div class="card-title">Jobs</div>
+      <canvas id="chart-jobs" height="200"></canvas>
+    </div>
+    <div class="chart-card">
+      <div class="card-title">Earnings (USD)</div>
+      <canvas id="chart-earnings" height="200"></canvas>
+    </div>
+  </div>
+</div>
+
 <div id="updated"></div>
 
 <script>
@@ -351,7 +417,73 @@ async function poll() {
   } catch(e) {
     document.getElementById('updated').textContent = 'connection lost…';
   }
+  fetchHistory();
 }
+
+// ── Charts ──────────────────────────────────────────────────────────
+var chartReady = false, jobsChart = null, earningsChart = null, currentPeriod = '24h';
+
+var sc = document.createElement('script');
+sc.src = 'https://cdn.jsdelivr.net/npm/chart.js@4/dist/chart.umd.min.js';
+sc.onload = function() {
+  chartReady = true;
+  document.getElementById('charts-section').style.display = 'block';
+  initCharts();
+  fetchHistory();
+};
+sc.onerror = function() { /* graceful degradation — charts stay hidden */ };
+document.head.appendChild(sc);
+
+var chartOpts = {
+  responsive: true, maintainAspectRatio: false,
+  plugins: { legend: { display: false } },
+  scales: {
+    x: { ticks: { color: '#666', font: { size: 10 }, maxRotation: 45 }, grid: { color: '#2a2a38' } },
+    y: { beginAtZero: true, ticks: { color: '#666', font: { size: 10 } }, grid: { color: '#2a2a38' } }
+  }
+};
+
+function initCharts() {
+  jobsChart = new Chart(document.getElementById('chart-jobs').getContext('2d'), {
+    type: 'bar',
+    data: { labels: [], datasets: [{ data: [], backgroundColor: '#eab308', borderRadius: 3 }] },
+    options: chartOpts
+  });
+  earningsChart = new Chart(document.getElementById('chart-earnings').getContext('2d'), {
+    type: 'bar',
+    data: { labels: [], datasets: [{ data: [], backgroundColor: '#22c55e', borderRadius: 3 }] },
+    options: Object.assign({}, chartOpts, {
+      scales: Object.assign({}, chartOpts.scales, {
+        y: Object.assign({}, chartOpts.scales.y, { ticks: Object.assign({}, chartOpts.scales.y.ticks, {
+          callback: function(v) { return '$' + v.toFixed(2); }
+        })})
+      })
+    })
+  });
+}
+
+async function fetchHistory() {
+  if (!chartReady) return;
+  try {
+    var r = await fetch('/api/history?period=' + currentPeriod);
+    var d = await r.json();
+    var labels = d.buckets.map(function(b) { return b.label; });
+    jobsChart.data.labels = labels;
+    jobsChart.data.datasets[0].data = d.buckets.map(function(b) { return b.jobs; });
+    jobsChart.update('none');
+    earningsChart.data.labels = labels;
+    earningsChart.data.datasets[0].data = d.buckets.map(function(b) { return b.earned; });
+    earningsChart.update('none');
+  } catch(e) {}
+}
+
+document.getElementById('period-tabs').addEventListener('click', function(e) {
+  if (e.target.tagName !== 'BUTTON') return;
+  currentPeriod = e.target.dataset.period;
+  document.querySelectorAll('#period-tabs button').forEach(function(b) { b.classList.remove('active'); });
+  e.target.classList.add('active');
+  fetchHistory();
+});
 
 poll();
 setInterval(poll, 5000);

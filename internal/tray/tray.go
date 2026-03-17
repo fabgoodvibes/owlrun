@@ -178,6 +178,7 @@ func (a *Agent) onReady() {
 
 	if a.dash != nil {
 		a.dash.SetProvider(a.statusSnapshot)
+		a.dash.SetTracker(a.tracker)
 	}
 
 	go a.gpuMonitor.Start()
