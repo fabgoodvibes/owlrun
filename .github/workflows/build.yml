@@ -2,7 +2,7 @@ name: Build & Deploy
 
 on:
   push:
-    branches: [main]
+    branches: [main, dev]
     tags: ['v*']
   pull_request:
     branches: [main]
@@ -91,6 +91,40 @@ jobs:
           name: owlrun-${{ matrix.network }}
           path: dist/
           retention-days: 7
+
+  # ── Deploy dev binaries to get.owlrun.me/download/beta/dev/ ─────────────────
+  deploy-dev:
+    name: Deploy dev to get.owlrun.me
+    needs: build
+    runs-on: ubuntu-latest
+    if: github.ref == 'refs/heads/dev'
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Download beta artifacts
+        uses: actions/download-artifact@v4
+        with:
+          name: owlrun-beta
+          path: dist/
+
+      - name: Prepare Pages directory
+        run: |
+          mkdir -p pages/download/beta/dev
+
+          # Copy binaries to dev dir
+          cp dist/* pages/download/beta/dev/
+
+          # Install scripts at CDN root
+          cp installer/install.sh pages/install.sh
+          cp installer/install.ps1 pages/install.ps1
+
+      - name: Deploy to Cloudflare Pages
+        uses: cloudflare/wrangler-action@v3
+        with:
+          apiToken: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          accountId: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          command: pages deploy pages --project-name=owlrun-cdn --branch=dev
 
   # ── Deploy beta binaries to get.owlrun.me via Cloudflare Pages (tags only) ─
   deploy-beta:
