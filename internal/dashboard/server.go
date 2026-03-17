@@ -196,7 +196,7 @@ const dashboardHTML = `<!DOCTYPE html>
   .tab-bar button.active { background: #2a2a38; color: #e2e2e8; border-color: #3a3a4a; }
   .chart-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; }
   @media (max-width: 600px) { .chart-grid { grid-template-columns: 1fr; } }
-  .chart-card { background: #1a1a24; border: 1px solid #2a2a38; border-radius: 10px; padding: 18px; }
+  .chart-card { background: #1a1a24; border: 1px solid #2a2a38; border-radius: 10px; padding: 18px; height: 260px; }
   .chart-card .card-title { font-size: 11px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.8px; color: #666; margin-bottom: 14px; }
   .wallet-warn { background: #2d1f00; border: 1px solid #b45309; border-radius: 8px; padding: 14px 18px; margin-bottom: 16px; display: none; }
   .wallet-warn .warn-title { color: #f59e0b; font-weight: 600; font-size: 13px; margin-bottom: 4px; }
@@ -325,11 +325,11 @@ const dashboardHTML = `<!DOCTYPE html>
   <div class="chart-grid">
     <div class="chart-card">
       <div class="card-title">Jobs</div>
-      <canvas id="chart-jobs" height="200"></canvas>
+      <canvas id="chart-jobs" height="100"></canvas>
     </div>
     <div class="chart-card">
       <div class="card-title">Earnings (USD)</div>
-      <canvas id="chart-earnings" height="200"></canvas>
+      <canvas id="chart-earnings" height="100"></canvas>
     </div>
   </div>
 </div>
@@ -435,11 +435,12 @@ sc.onerror = function() { /* graceful degradation — charts stay hidden */ };
 document.head.appendChild(sc);
 
 var chartOpts = {
-  responsive: true, maintainAspectRatio: false,
+  responsive: true, maintainAspectRatio: true, aspectRatio: 2,
+  animation: false, resizeDelay: 0,
   plugins: { legend: { display: false } },
   scales: {
     x: { ticks: { color: '#666', font: { size: 10 }, maxRotation: 45 }, grid: { color: '#2a2a38' } },
-    y: { beginAtZero: true, ticks: { color: '#666', font: { size: 10 } }, grid: { color: '#2a2a38' } }
+    y: { type: 'logarithmic', beginAtZero: true, ticks: { color: '#666', font: { size: 10 } }, grid: { color: '#2a2a38' } }
   }
 };
 
