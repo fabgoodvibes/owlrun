@@ -285,6 +285,25 @@ echo -e "${GREEN}  ████████╗ Owlrun Installer${RESET}"
 echo -e "${GREEN}  ╚══════╝  Earn money while your GPU sleeps${RESET}"
 echo ""
 
+echo -e "  This installer will:"
+echo -e "    • Detect your GPU and disk space"
+echo -e "    • Install Ollama (if not present) — ${BOLD}requires sudo${RESET}"
+echo -e "    • Download the Owlrun binary to ~/.local/bin/"
+echo -e "    • Write config to ~/.owlrun/owlrun.conf"
+echo -e "    • Register auto-start (systemd/launchd)"
+echo ""
+read -rp "  Continue? [y/N] " CONFIRM
+if [[ ! "$CONFIRM" =~ ^[Yy]$ ]]; then
+  echo "  Aborted."; exit 0
+fi
+echo ""
+
+# Pre-authorize sudo so it doesn't interrupt mid-install.
+if ! sudo -v 2>/dev/null; then
+  fail "sudo is required to install Ollama. Please run as a user with sudo access."
+  exit 1
+fi
+
 need_cmd curl
 
 # ── 1. Hardware detection ────────────────────────────────────────────────────
