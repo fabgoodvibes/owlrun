@@ -276,7 +276,7 @@ func (d *daemon) statusSnapshot() dashboard.Status {
 	s.Earnings.TotalUSD = snap.Total
 
 	gwStats := d.gateway.Stats()
-	s.Gateway.Connected = st == stateEarning
+	s.Gateway.Connected = gwStats.Connected
 	s.Gateway.GatewayStatus = gwStats.Status
 	s.Gateway.JobsToday = gwStats.JobsToday
 	s.Gateway.TokensToday = gwStats.TokensToday

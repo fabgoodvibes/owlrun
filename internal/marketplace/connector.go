@@ -35,6 +35,7 @@ type JobCompleteFunc func(model string, tokens int, earnedUSD float64)
 // GatewayStats is the last heartbeat_ack received from the gateway.
 // Safe to read from any goroutine via Connector.GatewayStats().
 type GatewayStats struct {
+	Connected        bool
 	Status           string
 	JobsToday        int
 	TokensToday      int
@@ -292,12 +293,14 @@ func (c *Connector) runSession(ctx context.Context) error {
 	}
 	c.mu.Lock()
 	c.conn = conn
+	c.gatewayStats.Connected = true
 	c.mu.Unlock()
 
 	defer func() {
 		conn.Close(websocket.StatusNormalClosure, "")
 		c.mu.Lock()
 		c.conn = nil
+		c.gatewayStats.Connected = false
 		c.mu.Unlock()
 	}()
 
@@ -363,6 +366,7 @@ func (c *Connector) readLoop(ctx context.Context, conn *websocket.Conn) error {
 		case "heartbeat_ack":
 			c.mu.Lock()
 			c.gatewayStats = GatewayStats{
+				Connected:        true,
 				Status:           msg.Status,
 				JobsToday:        msg.JobsToday,
 				TokensToday:      msg.TokensToday,
