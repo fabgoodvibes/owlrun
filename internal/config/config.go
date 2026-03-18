@@ -30,10 +30,11 @@ type Config struct {
 }
 
 type AccountConfig struct {
-	NodeID      string // stable UUID generated once, persisted to conf
-	APIKey      string
-	Wallet      string // Solana pubkey (base58) or EVM address (0x...)
-	ReferralCode string // affiliate referral code (owlr_ref_<code>), optional
+	NodeID           string // stable UUID generated once, persisted to conf
+	APIKey           string
+	Wallet           string // Solana pubkey (base58) or EVM address (0x...)
+	ReferralCode     string // affiliate referral code (owlr_ref_<code>), optional
+	LightningAddress string // Lightning address for BTC payouts (e.g. user@walletofsatoshi.com), optional
 }
 
 type MarketplaceConfig struct {
@@ -168,6 +169,7 @@ func Load() (Config, error) {
 		cfg.Account.APIKey = sec.Key("api_key").String()
 		cfg.Account.Wallet = sec.Key("wallet").String()
 		cfg.Account.ReferralCode = sec.Key("referral_code").String()
+		cfg.Account.LightningAddress = sec.Key("lightning_address").String()
 	}
 
 	if sec, err := f.GetSection("marketplace"); err == nil {

@@ -203,6 +203,7 @@ func buildDaemon(cfg config.Config, dash *dashboard.Server) *sniDaemon {
 		nodeID,
 		cfg.Account.Wallet,
 		cfg.Account.ReferralCode,
+		cfg.Account.LightningAddress,
 		cfg.Marketplace.Region,
 		buildinfo.Version,
 		info,

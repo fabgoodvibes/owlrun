@@ -74,6 +74,7 @@ func Run(cfg config.Config, dash *dashboard.Server) {
 		nodeID,
 		cfg.Account.Wallet,
 		cfg.Account.ReferralCode,
+		cfg.Account.LightningAddress,
 		cfg.Marketplace.Region,
 		buildinfo.Version,
 		info,

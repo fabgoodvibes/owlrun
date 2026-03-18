@@ -16,22 +16,23 @@ import (
 // Router owns the gateway Connector and exposes a simple Start/Stop interface
 // for the tray's state machine.
 type Router struct {
-	conn         *Connector
-	nodeID       string
-	apiKey       string
-	wallet       string
-	referralCode string
-	region       string
-	version      string
-	gpuInfo      gpu.Info
-	proxyBase    string
+	conn             *Connector
+	nodeID           string
+	apiKey           string
+	wallet           string
+	referralCode     string
+	lightningAddress string
+	region           string
+	version          string
+	gpuInfo          gpu.Info
+	proxyBase        string
 }
 
 // New creates a Router and wires up the gateway connector.
 // onComplete is called (from a goroutine) when a job_complete message arrives
 // from the gateway — use it to call earnings.Tracker.Record().
 func New(
-	gatewayBase, proxyBase, apiKey, nodeID, wallet, referralCode, region, version string,
+	gatewayBase, proxyBase, apiKey, nodeID, wallet, referralCode, lightningAddress, region, version string,
 	gpuInfo gpu.Info,
 	getStats StatsFunc,
 	onComplete JobCompleteFunc,
@@ -52,9 +53,10 @@ func New(
 		conn:         c,
 		nodeID:       nodeID,
 		apiKey:       apiKey,
-		wallet:       wallet,
-		referralCode: referralCode,
-		region:       region,
+		wallet:           wallet,
+		referralCode:     referralCode,
+		lightningAddress: lightningAddress,
+		region:           region,
 		version:      version,
 		gpuInfo:      gpuInfo,
 		proxyBase:    proxyBase,
@@ -62,7 +64,7 @@ func New(
 
 	// Pre-build the registration payload (no model loaded yet; models updated
 	// via SetModel before Connect is called).
-	payload, err := BuildRegistration(nodeID, apiKey, wallet, referralCode, region, version, gpuInfo, nil)
+	payload, err := BuildRegistration(nodeID, apiKey, wallet, referralCode, lightningAddress, region, version, gpuInfo, nil)
 	if err != nil {
 		log.Printf("owlrun: gateway: build registration payload: %v", err)
 	} else {
@@ -77,7 +79,7 @@ func New(
 func (r *Router) SetModel(model string) {
 	r.conn.SetModel(model)
 
-	payload, err := BuildRegistration(r.nodeID, r.apiKey, r.wallet, r.referralCode, r.region, r.version, r.gpuInfo, []string{model})
+	payload, err := BuildRegistration(r.nodeID, r.apiKey, r.wallet, r.referralCode, r.lightningAddress, r.region, r.version, r.gpuInfo, []string{model})
 	if err != nil {
 		log.Printf("owlrun: gateway: rebuild registration payload: %v", err)
 		return
