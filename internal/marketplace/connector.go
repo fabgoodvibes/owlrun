@@ -92,6 +92,7 @@ type Connector struct {
 
 	getStats    StatsFunc
 	onComplete  JobCompleteFunc
+	onConnect   func() // called when WS connects to gateway
 
 	// gatewayClient is used for the gateway proxy POST (requires HTTP/2).
 	// If nil, http.DefaultClient is used (works in production behind Caddy+TLS).
@@ -142,6 +143,7 @@ func NewConnector(
 	gatewayBase, proxyBase, apiKey, nodeID, wallet string,
 	getStats StatsFunc,
 	onComplete JobCompleteFunc,
+	onConnect func(),
 ) *Connector {
 	return &Connector{
 		gatewayBase: gatewayBase,
@@ -151,6 +153,7 @@ func NewConnector(
 		wallet:      wallet,
 		getStats:    getStats,
 		onComplete:  onComplete,
+		onConnect:   onConnect,
 	}
 }
 
@@ -305,6 +308,10 @@ func (c *Connector) runSession(ctx context.Context) error {
 	}()
 
 	log.Printf("owlrun: gateway: WS connected")
+
+	if c.onConnect != nil {
+		c.onConnect()
+	}
 
 	// Send first heartbeat immediately (don't wait 30s for ticker).
 	c.sendHeartbeat(ctx, conn)

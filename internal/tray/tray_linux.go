@@ -213,6 +213,11 @@ func buildDaemon(cfg config.Config, dash *dashboard.Server) *sniDaemon {
 		func(model string, tokens int, earnedUSD float64) {
 			tracker.Record(model, tokens, earnedUSD)
 		},
+		func() {
+			d.mu.Lock()
+			d.st = linuxEarning
+			d.mu.Unlock()
+		},
 	)
 
 	if dash != nil {

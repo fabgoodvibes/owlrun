@@ -57,6 +57,16 @@ func Run(cfg config.Config, dash *dashboard.Server) {
 	monitor := gpu.NewMonitor(info, 10*time.Second)
 	tracker := earnings.New()
 
+	d := &daemon{
+		cfg:       cfg,
+		nodeID:    nodeID,
+		gpuInfo:   info,
+		monitor:   monitor,
+		tracker:   tracker,
+		ollamaMgr: inference.New(info),
+		jobMode:   cfg.Idle.JobMode,
+	}
+
 	gw := marketplace.New(
 		cfg.Marketplace.Gateway,
 		cfg.Marketplace.ProxyBase,
@@ -74,18 +84,13 @@ func Run(cfg config.Config, dash *dashboard.Server) {
 		func(model string, tokens int, earnedUSD float64) {
 			tracker.Record(model, tokens, earnedUSD)
 		},
+		func() {
+			d.mu.Lock()
+			d.st = stateEarning
+			d.mu.Unlock()
+		},
 	)
-
-	d := &daemon{
-		cfg:       cfg,
-		nodeID:    nodeID,
-		gpuInfo:   info,
-		monitor:   monitor,
-		tracker:   tracker,
-		ollamaMgr: inference.New(info),
-		gateway:   gw,
-		jobMode:   cfg.Idle.JobMode,
-	}
+	d.gateway = gw
 
 	if dash != nil {
 		dash.SetProvider(d.statusSnapshot)

@@ -85,6 +85,18 @@ func Run(cfg config.Config, dash *dashboard.Server) {
 	monitor := gpu.NewMonitor(info, 10*time.Second)
 	tracker := earnings.New()
 
+	a := &Agent{
+		cfg:        cfg,
+		nodeID:     nodeID,
+		gpuInfo:    info,
+		gpuMonitor: monitor,
+		state:      StateIdle,
+		jobMode:    cfg.Idle.JobMode,
+		tracker:    tracker,
+		ollamaMgr:  inference.New(info),
+		dash:       dash,
+	}
+
 	gw := marketplace.New(
 		cfg.Marketplace.Gateway,
 		cfg.Marketplace.ProxyBase,
@@ -102,20 +114,14 @@ func Run(cfg config.Config, dash *dashboard.Server) {
 		func(model string, tokens int, earnedUSD float64) {
 			tracker.Record(model, tokens, earnedUSD)
 		},
+		func() {
+			a.mu.Lock()
+			a.state = StateEarning
+			a.refreshMenuLocked()
+			a.mu.Unlock()
+		},
 	)
-
-	a := &Agent{
-		cfg:        cfg,
-		nodeID:     nodeID,
-		gpuInfo:    info,
-		gpuMonitor: monitor,
-		state:      StateIdle,
-		jobMode:    cfg.Idle.JobMode,
-		tracker:    tracker,
-		ollamaMgr:  inference.New(info),
-		gateway:    gw,
-		dash:       dash,
-	}
+	a.gateway = gw
 	systray.Run(a.onReady, a.onExit)
 }
 

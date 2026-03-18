@@ -355,6 +355,10 @@ function stateDisplay(state) {
 }
 
 function update(d) {
+  // Override state: if gateway says registered+connected, node is earning
+  if ((d.state === 'ready' || d.state === 'wallet') && d.gateway && d.gateway.connected && d.gateway.status === 'registered') {
+    d.state = 'earning';
+  }
   document.getElementById('version').textContent = 'v' + d.version;
   document.getElementById('node-id').textContent = 'node ' + d.node_id;
 

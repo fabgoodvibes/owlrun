@@ -35,6 +35,7 @@ func New(
 	gpuInfo gpu.Info,
 	getStats StatsFunc,
 	onComplete JobCompleteFunc,
+	onConnect func(),
 ) *Router {
 	if gatewayBase == "" {
 		gatewayBase = DefaultGatewayBase
@@ -45,7 +46,7 @@ func New(
 		region = geo.DetectRegion()
 	}
 
-	c := NewConnector(gatewayBase, proxyBase, apiKey, nodeID, wallet, getStats, onComplete)
+	c := NewConnector(gatewayBase, proxyBase, apiKey, nodeID, wallet, getStats, onComplete, onConnect)
 
 	r := &Router{
 		conn:         c,
