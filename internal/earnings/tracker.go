@@ -184,7 +184,7 @@ func (t *Tracker) historyBucketed(sinceUnix int64, now time.Time, bucketSec int6
 		if !ok {
 			b = HistoryBucket{TS: ts}
 		}
-		b.Label = labelFn(time.Unix(ts, 0).UTC())
+		b.Label = labelFn(time.Unix(ts, 0))
 		out = append(out, b)
 	}
 	return out
@@ -213,7 +213,7 @@ func (t *Tracker) historyMonthly(sinceUnix int64, now time.Time, labelFn func(ti
 	}
 
 	// Fill empty months.
-	start := time.Date(now.Year(), now.Month(), 1, 0, 0, 0, 0, time.UTC).AddDate(0, -11, 0)
+	start := time.Date(now.Year(), now.Month(), 1, 0, 0, 0, 0, time.Local).AddDate(0, -11, 0)
 	var out []HistoryBucket
 	for m := start; !m.After(now); m = m.AddDate(0, 1, 0) {
 		key := fmt.Sprintf("%04d-%02d", m.Year(), m.Month())
