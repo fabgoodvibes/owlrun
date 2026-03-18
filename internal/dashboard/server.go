@@ -10,6 +10,7 @@ import (
 	"net/http"
 	"sync/atomic"
 
+	"github.com/fabgoodvibes/owlrun/internal/buildinfo"
 	"github.com/fabgoodvibes/owlrun/internal/earnings"
 )
 
@@ -109,7 +110,7 @@ func (s *Server) Start() error {
 func (s *Server) getStatus() Status {
 	p := s.provider.Load()
 	if p == nil {
-		return Status{State: "starting", Version: "0.1.0"}
+		return Status{State: "starting", Version: buildinfo.Version}
 	}
 	return (*p)()
 }
