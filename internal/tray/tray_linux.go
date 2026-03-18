@@ -217,6 +217,7 @@ func buildDaemon(cfg config.Config, dash *dashboard.Server) *sniDaemon {
 
 	if dash != nil {
 		dash.SetProvider(d.statusSnapshot)
+		dash.SetTracker(tracker)
 	}
 
 	return d

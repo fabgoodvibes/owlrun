@@ -89,6 +89,7 @@ func Run(cfg config.Config, dash *dashboard.Server) {
 
 	if dash != nil {
 		dash.SetProvider(d.statusSnapshot)
+		dash.SetTracker(tracker)
 	}
 
 	log.Printf("owlrun: node %s | gpu %s %s (%.0f GB VRAM)",

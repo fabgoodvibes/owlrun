@@ -17,6 +17,7 @@ set -euo pipefail
 # ── Constants ─────────────────────────────────────────────────────────────────
 
 DOWNLOAD_BASE="https://get.owlrun.me/download/beta/latest"
+DOWNLOAD_BASE_DEV="https://dev.owlrun-cdn.pages.dev/download/beta/dev"
 INSTALL_DIR="$HOME/.local/bin"
 EXE_PATH="$INSTALL_DIR/owlrun"
 CONFIG_DIR="$HOME/.owlrun"
@@ -29,15 +30,21 @@ WARN_DISK_PCT=30
 CLI_KEY=""
 CLI_WALLET=""
 CLI_REFERRAL=""
+CLI_CHANNEL=""
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --key)      CLI_KEY="$2"; shift 2 ;;
     --wallet)   CLI_WALLET="$2"; shift 2 ;;
     --referral) CLI_REFERRAL="$2"; shift 2 ;;
+    --channel)  CLI_CHANNEL="$2"; shift 2 ;;
     *) shift ;;
   esac
 done
+
+if [[ "$CLI_CHANNEL" == "dev" ]]; then
+  DOWNLOAD_BASE="$DOWNLOAD_BASE_DEV"
+fi
 
 # ── Colours ───────────────────────────────────────────────────────────────────
 
