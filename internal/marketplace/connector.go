@@ -41,7 +41,6 @@ type GatewayStats struct {
 	TokensToday      int
 	EarnedTodayUSD   float64
 	QueueDepthGlobal int
-	NextPayoutEpoch  string
 	BtcPrice         BtcPrice
 	Broadcasts       []Broadcast
 	BalanceSats      int64
@@ -72,7 +71,6 @@ type wsMsg struct {
 	TokensToday      int     `json:"tokens_today,omitempty"`
 	EarnedTodayUSD   float64 `json:"earned_today_usd,omitempty"`
 	QueueDepthGlobal int     `json:"queue_depth_global,omitempty"`
-	NextPayoutEpoch  string  `json:"next_payout_epoch,omitempty"`
 	BtcLiveUsd       float64 `json:"btc_live_usd,omitempty"`
 	BtcYesterdayFix  float64 `json:"btc_yesterday_fix,omitempty"`
 	BtcDailyAvg      float64 `json:"btc_daily_avg,omitempty"`
@@ -119,7 +117,8 @@ type Connector struct {
 
 	getStats    StatsFunc
 	onComplete  JobCompleteFunc
-	onConnect   func() // called when WS connects to gateway
+	onConnect       func()              // called when WS connects to gateway
+	onBalanceUpdate func(balanceSats int64) // called on heartbeat_ack with balance_sats
 
 	// gatewayClient is used for the gateway proxy POST (requires HTTP/2).
 	// If nil, http.DefaultClient is used (works in production behind Caddy+TLS).
@@ -171,16 +170,18 @@ func NewConnector(
 	getStats StatsFunc,
 	onComplete JobCompleteFunc,
 	onConnect func(),
+	onBalanceUpdate func(balanceSats int64),
 ) *Connector {
 	return &Connector{
-		gatewayBase: gatewayBase,
-		proxyBase:   proxyBase,
-		apiKey:      apiKey,
-		nodeID:      nodeID,
-		wallet:      wallet,
-		getStats:    getStats,
-		onComplete:  onComplete,
-		onConnect:   onConnect,
+		gatewayBase:     gatewayBase,
+		proxyBase:       proxyBase,
+		apiKey:          apiKey,
+		nodeID:          nodeID,
+		wallet:          wallet,
+		getStats:        getStats,
+		onComplete:      onComplete,
+		onConnect:       onConnect,
+		onBalanceUpdate: onBalanceUpdate,
 	}
 }
 
@@ -406,7 +407,6 @@ func (c *Connector) readLoop(ctx context.Context, conn *websocket.Conn) error {
 				TokensToday:      msg.TokensToday,
 				EarnedTodayUSD:   msg.EarnedTodayUSD,
 				QueueDepthGlobal: msg.QueueDepthGlobal,
-				NextPayoutEpoch:  msg.NextPayoutEpoch,
 				BtcPrice: BtcPrice{
 					LiveUsd:    msg.BtcLiveUsd,
 					YesterdayFix: msg.BtcYesterdayFix,
@@ -418,6 +418,9 @@ func (c *Connector) readLoop(ctx context.Context, conn *websocket.Conn) error {
 				BalanceSats:      msg.BalanceSats,
 			}
 			c.mu.Unlock()
+			if c.onBalanceUpdate != nil && msg.BalanceSats > 0 {
+				go c.onBalanceUpdate(msg.BalanceSats)
+			}
 		case "job":
 			go c.handleJob(ctx, conn, msg)
 		case "job_complete":

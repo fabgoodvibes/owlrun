@@ -37,6 +37,7 @@ func New(
 	getStats StatsFunc,
 	onComplete JobCompleteFunc,
 	onConnect func(),
+	onBalanceUpdate ...func(balanceSats int64),
 ) *Router {
 	if gatewayBase == "" {
 		gatewayBase = DefaultGatewayBase
@@ -47,7 +48,11 @@ func New(
 		region = geo.DetectRegion()
 	}
 
-	c := NewConnector(gatewayBase, proxyBase, apiKey, nodeID, wallet, getStats, onComplete, onConnect)
+	var balanceCb func(int64)
+	if len(onBalanceUpdate) > 0 {
+		balanceCb = onBalanceUpdate[0]
+	}
+	c := NewConnector(gatewayBase, proxyBase, apiKey, nodeID, wallet, getStats, onComplete, onConnect, balanceCb)
 
 	r := &Router{
 		conn:         c,

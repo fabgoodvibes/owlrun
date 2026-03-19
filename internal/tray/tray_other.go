@@ -95,6 +95,9 @@ func Run(cfg config.Config, dash *dashboard.Server) {
 			d.st = stateEarning
 			d.mu.Unlock()
 		},
+		func(balanceSats int64) {
+			d.ecash.AutoClaim(balanceSats)
+		},
 	)
 	d.gateway = gw
 
@@ -297,8 +300,6 @@ func (d *daemon) statusSnapshot() dashboard.Status {
 	s.Gateway.TokensToday = gwStats.TokensToday
 	s.Gateway.EarnedTodayUSD = gwStats.EarnedTodayUSD
 	s.Gateway.QueueDepthGlobal = gwStats.QueueDepthGlobal
-	s.Gateway.NextPayoutEpoch = gwStats.NextPayoutEpoch
-
 	// BTC price from gateway
 	s.BtcPrice = dashboard.BtcPriceInfo{
 		LiveUsd:    gwStats.BtcPrice.LiveUsd,
@@ -319,13 +320,19 @@ func (d *daemon) statusSnapshot() dashboard.Status {
 	// Sats wallet
 	if d.ecash != nil {
 		ws := d.ecash.GetStats(gwStats.BalanceSats, gwStats.BtcPrice.LiveUsd)
+		var hist []dashboard.TokenHistoryItem
+		for _, t := range ws.TokenHistory {
+			hist = append(hist, dashboard.TokenHistoryItem{Token: t.Token, Sats: t.Sats, ClaimedAt: t.ClaimedAt})
+		}
 		s.SatsWallet = dashboard.SatsWalletInfo{
-			GatewaySats: ws.GatewaySats,
-			LocalSats:   ws.LocalSats,
-			TotalSats:   ws.TotalSats,
-			USDApprox:   ws.USDApprox,
-			ProofCount:  ws.ProofCount,
-			LastClaim:   ws.LastClaim,
+			GatewaySats:  ws.GatewaySats,
+			LocalSats:    ws.LocalSats,
+			TotalSats:    ws.TotalSats,
+			USDApprox:    ws.USDApprox,
+			ProofCount:   ws.ProofCount,
+			LastClaim:    ws.LastClaim,
+			LastToken:    ws.LastToken,
+			TokenHistory: hist,
 		}
 	}
 

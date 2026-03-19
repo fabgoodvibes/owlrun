@@ -52,7 +52,6 @@ type Status struct {
 		TokensToday      int     `json:"tokens_today"`
 		EarnedTodayUSD   float64 `json:"earned_today_usd"`
 		QueueDepthGlobal int     `json:"queue_depth_global"`
-		NextPayoutEpoch  string  `json:"next_payout_epoch"`
 	} `json:"gateway"`
 
 	Disk struct {
@@ -84,12 +83,21 @@ type BroadcastMsg struct {
 
 // SatsWalletInfo is the provider's ecash wallet state for the dashboard.
 type SatsWalletInfo struct {
-	GatewaySats int64   `json:"gateway_sats"` // unclaimed on gateway
-	LocalSats   int64   `json:"local_sats"`   // claimed proofs stored locally
-	TotalSats   int64   `json:"total_sats"`   // gateway + local
-	USDApprox   float64 `json:"usd_approx"`   // approximate USD value
-	ProofCount  int     `json:"proof_count"`   // number of local proofs
-	LastClaim   string  `json:"last_claim"`    // ISO timestamp
+	GatewaySats  int64              `json:"gateway_sats"`  // unclaimed on gateway
+	LocalSats    int64              `json:"local_sats"`    // claimed proofs stored locally
+	TotalSats    int64              `json:"total_sats"`    // gateway + local
+	USDApprox    float64            `json:"usd_approx"`    // approximate USD value
+	ProofCount   int                `json:"proof_count"`   // number of local proofs
+	LastClaim    string             `json:"last_claim"`    // ISO timestamp
+	LastToken    string             `json:"last_token"`    // most recent cashuA token (for QR)
+	TokenHistory []TokenHistoryItem `json:"token_history"` // last N tokens
+}
+
+// TokenHistoryItem is a claimed ecash token with metadata for the dashboard.
+type TokenHistoryItem struct {
+	Token     string `json:"token"`
+	Sats      uint64 `json:"sats"`
+	ClaimedAt string `json:"claimed_at"`
 }
 
 // StatusProvider is a function that returns the current status snapshot.
@@ -324,10 +332,22 @@ const dashboardHTML = `<!DOCTYPE html>
   <!-- ═══ Financial row: Sats Wallet + BTC Price ═══ -->
   <div class="card" id="sats-card">
     <div class="card-title">Sats Wallet</div>
-    <div id="sats-inactive" style="color:#9999b0;font-size:15px;font-style:italic;padding:8px 0;text-align:center;display:none">
-      Sats payments not yet active on this gateway
+    <div id="sats-onboarding" style="display:none;text-align:center;padding:16px 8px">
+      <div style="font-size:16px;color:#d0d0e0;margin-bottom:10px">Earning sats... QR code appears when ready</div>
+      <div style="background:#1e1e2a;border:1px solid #2a2a38;border-radius:10px;padding:16px;margin-top:10px">
+        <div style="font-size:15px;color:#f7931a;font-weight:600;margin-bottom:6px">Get Minibits to receive your earnings</div>
+        <div style="font-size:14px;color:#aaaabb;line-height:1.6">
+          Install <a href="https://www.minibits.cash/" target="_blank" style="color:#f7931a;text-decoration:underline">Minibits</a> (iOS / Android) to receive your sats instantly.<br>
+          Your earnings will appear as a QR code here. Scan with Minibits to claim.
+        </div>
+      </div>
     </div>
-    <div id="sats-content">
+    <div id="sats-content" style="display:none">
+      <div id="qr-section" style="text-align:center;margin-bottom:16px;display:none">
+        <canvas id="qr-canvas" style="image-rendering:pixelated;border-radius:8px;background:#fff;padding:8px;max-width:200px;width:100%"></canvas>
+        <div style="margin-top:8px;font-size:13px;color:#aaaabb">Scan with <a href="https://www.minibits.cash/" target="_blank" style="color:#f7931a">Minibits</a> or any Cashu wallet</div>
+        <div id="qr-amount" style="color:#22c55e;font-size:15px;font-weight:600;margin-top:4px"></div>
+      </div>
       <div class="stat">
         <span class="stat-label">Gateway (unclaimed)</span>
         <span class="stat-value" id="sats-gateway">0</span>
@@ -353,6 +373,10 @@ const dashboardHTML = `<!DOCTYPE html>
         <div style="color:#aaaabb;font-size:14px;margin-bottom:4px">Cashu token (paste into any Cashu wallet):</div>
         <textarea id="claim-token" readonly style="width:100%;height:80px;background:#0f0f13;color:#f7931a;border:1px solid #3a3a48;border-radius:8px;padding:10px;font-size:12px;font-family:monospace;resize:vertical;box-sizing:border-box"></textarea>
         <button onclick="copyToken()" style="margin-top:6px;padding:6px 14px;background:#2a2a38;color:#d0d0e0;border:1px solid #3a3a48;border-radius:6px;cursor:pointer;font-size:14px">Copy</button>
+      </div>
+      <div id="token-history" style="display:none;margin-top:16px;border-top:1px solid #2a2a38;padding-top:12px">
+        <div style="font-size:13px;color:#aaaabb;font-weight:600;margin-bottom:8px">Recent tokens</div>
+        <div id="token-history-list"></div>
       </div>
     </div>
   </div>
@@ -564,12 +588,12 @@ function update(d) {
 
   // Sats Wallet
   var sw = d.sats_wallet;
-  var satsActive = sw.gateway_sats || sw.local_sats || sw.total_sats;
+  var satsActive = sw.gateway_sats || sw.local_sats || sw.total_sats || sw.last_token;
   if (!satsActive) {
-    document.getElementById('sats-inactive').style.display = '';
+    document.getElementById('sats-onboarding').style.display = '';
     document.getElementById('sats-content').style.display = 'none';
   } else {
-    document.getElementById('sats-inactive').style.display = 'none';
+    document.getElementById('sats-onboarding').style.display = 'none';
     document.getElementById('sats-content').style.display = '';
     function fmtSats(v) { return v ? v.toLocaleString() + ' sats' : '0 sats'; }
     document.getElementById('sats-gateway').textContent = fmtSats(sw.gateway_sats);
@@ -580,6 +604,38 @@ function update(d) {
     document.getElementById('btn-claim').style.opacity = sw.gateway_sats ? '1' : '0.5';
     document.getElementById('btn-export').disabled = !sw.local_sats;
     document.getElementById('btn-export').style.opacity = sw.local_sats ? '1' : '0.5';
+
+    // QR code for latest token (auto-refresh)
+    var qrSec = document.getElementById('qr-section');
+    if (sw.last_token && qrReady) {
+      if (sw.last_token !== lastQrToken) {
+        lastQrToken = sw.last_token;
+        renderQR(sw.last_token);
+      }
+      qrSec.style.display = '';
+      var hist = sw.token_history || [];
+      var topSats = hist.length > 0 ? hist[0].sats : 0;
+      document.getElementById('qr-amount').textContent = topSats ? topSats.toLocaleString() + ' sats' : '';
+    } else if (!sw.last_token) {
+      qrSec.style.display = 'none';
+    }
+
+    // Token history
+    var histEl = document.getElementById('token-history');
+    var histList = document.getElementById('token-history-list');
+    var hist = sw.token_history || [];
+    if (hist.length > 1) {
+      histEl.style.display = '';
+      histList.innerHTML = hist.slice(1).map(function(t) {
+        var dt = new Date(t.claimed_at);
+        var ts = isNaN(dt) ? t.claimed_at : dt.toLocaleString();
+        return '<div style="display:flex;justify-content:space-between;padding:6px 0;border-bottom:1px solid #1a1a24;font-size:13px">' +
+          '<span style="color:#f7931a">' + (t.sats||0).toLocaleString() + ' sats</span>' +
+          '<span style="color:#888;cursor:pointer" onclick="showHistoryToken(\'' + escapeAttr(t.token) + '\')">' + ts + ' [show]</span></div>';
+      }).join('');
+    } else {
+      histEl.style.display = 'none';
+    }
   }
 
   // BTC Price
@@ -622,6 +678,48 @@ function update(d) {
   }
 
   document.getElementById('updated').textContent = 'updated ' + new Date().toLocaleTimeString();
+}
+
+function escapeAttr(s) { return s.replace(/'/g, "\\'").replace(/\\/g, '\\\\'); }
+var lastQrToken = '';
+var qrReady = false;
+
+// Minimal QR code generator (client-side, no external dependency).
+// Loads qrcode.min.js from CDN; falls back gracefully if offline.
+var qrScript = document.createElement('script');
+qrScript.src = 'https://cdn.jsdelivr.net/npm/qrcode-generator@1.4.4/qrcode.min.js';
+qrScript.onload = function() { qrReady = true; if (lastQrToken) renderQR(lastQrToken); };
+qrScript.onerror = function() { /* graceful degradation — QR hidden, token still copyable */ };
+document.head.appendChild(qrScript);
+
+function renderQR(text) {
+  if (typeof qrcode === 'undefined') return;
+  var canvas = document.getElementById('qr-canvas');
+  // Use error correction L, auto-detect version
+  var qr = qrcode(0, 'L');
+  qr.addData(text);
+  qr.make();
+  var size = qr.getModuleCount();
+  var scale = Math.max(4, Math.floor(200 / size));
+  canvas.width = size * scale;
+  canvas.height = size * scale;
+  var ctx = canvas.getContext('2d');
+  ctx.fillStyle = '#ffffff';
+  ctx.fillRect(0, 0, canvas.width, canvas.height);
+  ctx.fillStyle = '#000000';
+  for (var row = 0; row < size; row++) {
+    for (var col = 0; col < size; col++) {
+      if (qr.isDark(row, col)) {
+        ctx.fillRect(col * scale, row * scale, scale, scale);
+      }
+    }
+  }
+}
+
+function showHistoryToken(token) {
+  document.getElementById('claim-token').value = token;
+  document.getElementById('claim-amount').textContent = '';
+  document.getElementById('claim-result').style.display = '';
 }
 
 async function poll() {
