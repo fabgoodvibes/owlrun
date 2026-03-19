@@ -107,6 +107,16 @@ func Run(cfg config.Config, dash *dashboard.Server) {
 		dash.SetClaimer(func(amountSats int64) (string, error) {
 			return d.ecash.Claim(amountSats)
 		})
+		dash.SetLightningAddressSetter(func(addr string) error {
+			if err := config.SaveLightningAddress(addr); err != nil {
+				return err
+			}
+			d.mu.Lock()
+			d.cfg.Account.LightningAddress = addr
+			d.mu.Unlock()
+			d.gateway.SetLightningAddress(addr)
+			return nil
+		})
 	}
 
 	log.Printf("owlrun: node %s | gpu %s %s (%.0f GB VRAM)",
@@ -300,6 +310,8 @@ func (d *daemon) statusSnapshot() dashboard.Status {
 	s.Gateway.TokensToday = gwStats.TokensToday
 	s.Gateway.EarnedTodayUSD = gwStats.EarnedTodayUSD
 	s.Gateway.QueueDepthGlobal = gwStats.QueueDepthGlobal
+	s.LightningAddress = d.cfg.Account.LightningAddress
+
 	// BTC price from gateway
 	s.BtcPrice = dashboard.BtcPriceInfo{
 		LiveUsd:    gwStats.BtcPrice.LiveUsd,

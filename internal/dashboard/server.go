@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"net"
 	"net/http"
+	"strings"
 	"sync/atomic"
 
 	"github.com/fabgoodvibes/owlrun/internal/buildinfo"
@@ -61,9 +62,10 @@ type Status struct {
 		FreePct float64 `json:"free_pct"`
 	} `json:"disk"`
 
-	BtcPrice   BtcPriceInfo   `json:"btc_price"`
-	Broadcasts []BroadcastMsg `json:"broadcasts"`
-	SatsWallet SatsWalletInfo `json:"sats_wallet"`
+	LightningAddress string         `json:"lightning_address"`
+	BtcPrice         BtcPriceInfo   `json:"btc_price"`
+	Broadcasts       []BroadcastMsg `json:"broadcasts"`
+	SatsWallet       SatsWalletInfo `json:"sats_wallet"`
 }
 
 // BtcPriceInfo is the BTC/USD pricing snapshot for the dashboard.
@@ -108,12 +110,16 @@ type StatusProvider func() Status
 // amountSats 0 = claim all. Returns the cashuA... token string.
 type ClaimFunc func(amountSats int64) (token string, err error)
 
+// SetLightningAddressFunc saves a Lightning address and re-registers with gateway.
+type SetLightningAddressFunc func(addr string) error
+
 // Server is the embedded web dashboard.
 type Server struct {
 	port     int
 	provider atomic.Pointer[StatusProvider]
 	tracker  atomic.Pointer[earnings.Tracker]
 	claimer  atomic.Pointer[ClaimFunc]
+	setLnAddr atomic.Pointer[SetLightningAddressFunc]
 }
 
 // New creates a dashboard Server on the given port.
@@ -140,6 +146,11 @@ func (s *Server) SetClaimer(c ClaimFunc) {
 	s.claimer.Store(&c)
 }
 
+// SetLightningAddressSetter wires the Lightning address save function.
+func (s *Server) SetLightningAddressSetter(fn SetLightningAddressFunc) {
+	s.setLnAddr.Store(&fn)
+}
+
 // Start launches the HTTP server in the background.
 // The listener is bound before returning so the port is ready for connections.
 func (s *Server) Start() error {
@@ -148,6 +159,7 @@ func (s *Server) Start() error {
 	mux.HandleFunc("/api/status", s.handleStatus)
 	mux.HandleFunc("/api/history", s.handleHistory)
 	mux.HandleFunc("/api/claim-ecash", s.handleClaimEcash)
+	mux.HandleFunc("/api/set-lightning-address", s.handleSetLightningAddress)
 	ln, err := net.Listen("tcp", fmt.Sprintf("127.0.0.1:%d", s.port))
 	if err != nil {
 		return err
@@ -232,6 +244,48 @@ func (s *Server) handleClaimEcash(w http.ResponseWriter, r *http.Request) {
 		amountSats = parsed.TotalSats()
 	}
 	json.NewEncoder(w).Encode(map[string]any{"token": token, "amount_sats": amountSats})
+}
+
+func (s *Server) handleSetLightningAddress(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Content-Type", "application/json")
+	w.Header().Set("Access-Control-Allow-Origin", "*")
+
+	if r.Method != http.MethodPost {
+		w.WriteHeader(http.StatusMethodNotAllowed)
+		json.NewEncoder(w).Encode(map[string]string{"error": "POST required"})
+		return
+	}
+
+	fn := s.setLnAddr.Load()
+	if fn == nil {
+		w.WriteHeader(http.StatusServiceUnavailable)
+		json.NewEncoder(w).Encode(map[string]string{"error": "not ready"})
+		return
+	}
+
+	var req struct {
+		Address string `json:"address"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil || req.Address == "" {
+		w.WriteHeader(http.StatusBadRequest)
+		json.NewEncoder(w).Encode(map[string]string{"error": "address is required"})
+		return
+	}
+
+	// Basic Lightning address validation: must contain @
+	if !strings.Contains(req.Address, "@") {
+		w.WriteHeader(http.StatusBadRequest)
+		json.NewEncoder(w).Encode(map[string]string{"error": "invalid Lightning address — expected format: user@domain"})
+		return
+	}
+
+	if err := (*fn)(req.Address); err != nil {
+		w.WriteHeader(http.StatusInternalServerError)
+		json.NewEncoder(w).Encode(map[string]string{"error": err.Error()})
+		return
+	}
+
+	json.NewEncoder(w).Encode(map[string]string{"status": "ok", "address": req.Address})
 }
 
 func (s *Server) handleIndex(w http.ResponseWriter, r *http.Request) {
@@ -330,53 +384,54 @@ const dashboardHTML = `<!DOCTYPE html>
   </div>
 
   <!-- ═══ Financial row: Sats Wallet + BTC Price ═══ -->
-  <div class="card" id="sats-card">
-    <div class="card-title">Sats Wallet</div>
-    <div id="sats-onboarding" style="display:none;text-align:center;padding:16px 8px">
-      <div style="font-size:16px;color:#d0d0e0;margin-bottom:10px">Earning sats... QR code appears when ready</div>
-      <div style="background:#1e1e2a;border:1px solid #2a2a38;border-radius:10px;padding:16px;margin-top:10px">
-        <div style="font-size:15px;color:#f7931a;font-weight:600;margin-bottom:6px">Get Minibits to receive your earnings</div>
-        <div style="font-size:14px;color:#aaaabb;line-height:1.6">
-          Install <a href="https://www.minibits.cash/" target="_blank" style="color:#f7931a;text-decoration:underline">Minibits</a> (iOS / Android) to receive your sats instantly.<br>
-          Your earnings will appear as a QR code here. Scan with Minibits to claim.
+  <!-- ═══ Lightning Wallet Setup ═══ -->
+  <div class="card" id="wallet-card">
+    <div class="card-title">Wallet</div>
+    <div id="wallet-setup" style="display:none">
+      <div style="text-align:center;padding:8px 0 16px">
+        <div style="font-size:28px;margin-bottom:8px">&#9889;</div>
+        <div style="font-size:16px;color:#d0d0e0;font-weight:600;margin-bottom:12px">Set up your wallet to get paid</div>
+        <div style="text-align:left;font-size:14px;color:#aaaabb;line-height:1.8">
+          <div style="margin-bottom:8px"><span style="color:#f7931a;font-weight:600">1.</span> Install <a href="https://www.minibits.cash/" target="_blank" style="color:#f7931a;text-decoration:underline">Minibits</a> wallet (by Bitango Technologies)</div>
+          <div style="margin-bottom:8px"><span style="color:#f7931a;font-weight:600">2.</span> Find your Lightning address in Minibits (looks like <code style="background:#0f0f13;padding:2px 6px;border-radius:4px;font-size:13px;color:#f7931a">you@minibits.cash</code>)</div>
+          <div><span style="color:#f7931a;font-weight:600">3.</span> Paste it below</div>
         </div>
       </div>
+      <div style="margin-top:12px">
+        <input id="ln-address-input" type="text" placeholder="yourname@minibits.cash" style="width:100%;padding:12px 14px;background:#0f0f13;color:#f7931a;border:1px solid #3a3a48;border-radius:8px;font-size:15px;font-family:monospace;box-sizing:border-box" />
+        <button id="btn-save-ln" onclick="saveLightningAddress()" style="width:100%;margin-top:8px;padding:12px 16px;background:#f7931a;color:#fff;border:none;border-radius:8px;cursor:pointer;font-weight:600;font-size:15px">Save &amp; Start Earning</button>
+        <div id="ln-save-error" style="display:none;color:#ef4444;font-size:13px;margin-top:6px;text-align:center"></div>
+      </div>
+      <div style="margin-top:14px;font-size:13px;color:#666;text-align:center">
+        Works with any Lightning wallet — Minibits, Phoenix, Wallet of Satoshi, etc.
+      </div>
     </div>
-    <div id="sats-content" style="display:none">
-      <div id="qr-section" style="text-align:center;margin-bottom:16px;display:none">
-        <canvas id="qr-canvas" style="image-rendering:pixelated;border-radius:8px;background:#fff;padding:8px;max-width:200px;width:100%"></canvas>
-        <div style="margin-top:8px;font-size:13px;color:#aaaabb">Scan with <a href="https://www.minibits.cash/" target="_blank" style="color:#f7931a">Minibits</a> or any Cashu wallet</div>
-        <div id="qr-amount" style="color:#22c55e;font-size:15px;font-weight:600;margin-top:4px"></div>
+    <div id="wallet-active" style="display:none">
+      <div class="stat">
+        <span class="stat-label">Lightning address</span>
+        <span class="stat-value" id="ln-address-display" style="color:#f7931a;font-family:monospace;font-size:14px;max-width:200px;text-align:right;word-break:break-all"></span>
       </div>
       <div class="stat">
-        <span class="stat-label">Gateway (unclaimed)</span>
-        <span class="stat-value" id="sats-gateway">0</span>
-      </div>
-      <div class="stat">
-        <span class="stat-label">Local wallet</span>
-        <span class="stat-value" id="sats-local">0</span>
-      </div>
-      <div class="stat">
-        <span class="stat-label">Total</span>
-        <span class="stat-value" id="sats-total" style="color:#f7931a;font-weight:bold">0 sats</span>
+        <span class="stat-label">Pending earnings</span>
+        <span class="stat-value" id="sats-gateway" style="color:#f7931a;font-weight:bold">0 sats</span>
       </div>
       <div class="stat">
         <span class="stat-label">USD approx</span>
         <span class="stat-value" id="sats-usd">$0.00</span>
       </div>
-      <div style="margin-top:12px;display:flex;gap:8px">
-        <button id="btn-claim" onclick="claimEcash()" style="flex:1;padding:10px 16px;background:#f7931a;color:#fff;border:none;border-radius:8px;cursor:pointer;font-weight:600;font-size:14px">Claim All</button>
-        <button id="btn-export" onclick="exportToken()" style="flex:1;padding:10px 16px;background:#2a2a38;color:#d0d0e0;border:1px solid #3a3a48;border-radius:8px;cursor:pointer;font-size:15px">Export</button>
+      <div style="font-size:13px;color:#aaaabb;margin-top:10px;padding-top:10px;border-top:1px solid #2a2a38">
+        Earnings auto-sent to your Lightning wallet. No action needed.
       </div>
-      <div id="claim-result" style="display:none;margin-top:12px">
-        <div style="color:#22c55e;font-size:15px;font-weight:600;margin-bottom:6px" id="claim-amount"></div>
-        <div style="color:#aaaabb;font-size:14px;margin-bottom:4px">Cashu token (paste into any Cashu wallet):</div>
-        <textarea id="claim-token" readonly style="width:100%;height:80px;background:#0f0f13;color:#f7931a;border:1px solid #3a3a48;border-radius:8px;padding:10px;font-size:12px;font-family:monospace;resize:vertical;box-sizing:border-box"></textarea>
-        <button onclick="copyToken()" style="margin-top:6px;padding:6px 14px;background:#2a2a38;color:#d0d0e0;border:1px solid #3a3a48;border-radius:6px;cursor:pointer;font-size:14px">Copy</button>
+      <div style="margin-top:10px">
+        <button onclick="toggleEditLnAddress()" style="padding:6px 14px;background:#2a2a38;color:#d0d0e0;border:1px solid #3a3a48;border-radius:6px;cursor:pointer;font-size:13px">Change address</button>
       </div>
-      <div id="token-history" style="display:none;margin-top:16px;border-top:1px solid #2a2a38;padding-top:12px">
-        <div style="font-size:13px;color:#aaaabb;font-weight:600;margin-bottom:8px">Recent tokens</div>
-        <div id="token-history-list"></div>
+      <div id="edit-ln-section" style="display:none;margin-top:10px">
+        <input id="ln-address-edit" type="text" style="width:100%;padding:10px 12px;background:#0f0f13;color:#f7931a;border:1px solid #3a3a48;border-radius:8px;font-size:14px;font-family:monospace;box-sizing:border-box" />
+        <div style="display:flex;gap:6px;margin-top:6px">
+          <button onclick="saveLightningAddressEdit()" style="flex:1;padding:8px 12px;background:#f7931a;color:#fff;border:none;border-radius:6px;cursor:pointer;font-weight:600;font-size:13px">Save</button>
+          <button onclick="toggleEditLnAddress()" style="padding:8px 12px;background:#2a2a38;color:#d0d0e0;border:1px solid #3a3a48;border-radius:6px;cursor:pointer;font-size:13px">Cancel</button>
+        </div>
+        <div id="ln-edit-error" style="display:none;color:#ef4444;font-size:13px;margin-top:6px"></div>
       </div>
     </div>
   </div>
@@ -586,56 +641,19 @@ function update(d) {
   diskBar.style.width = dk.free_pct + '%';
   diskBar.className = 'bar-fill ' + (dk.free_pct < 10 ? 'bar-red' : dk.free_pct < 30 ? 'bar-yellow' : 'bar-green');
 
-  // Sats Wallet
+  // Wallet (Lightning address)
+  var lnAddr = d.lightning_address || '';
   var sw = d.sats_wallet;
-  var satsActive = sw.gateway_sats || sw.local_sats || sw.total_sats || sw.last_token;
-  if (!satsActive) {
-    document.getElementById('sats-onboarding').style.display = '';
-    document.getElementById('sats-content').style.display = 'none';
-  } else {
-    document.getElementById('sats-onboarding').style.display = 'none';
-    document.getElementById('sats-content').style.display = '';
-    function fmtSats(v) { return v ? v.toLocaleString() + ' sats' : '0 sats'; }
+  function fmtSats(v) { return v ? v.toLocaleString() + ' sats' : '0 sats'; }
+  if (lnAddr) {
+    document.getElementById('wallet-setup').style.display = 'none';
+    document.getElementById('wallet-active').style.display = '';
+    document.getElementById('ln-address-display').textContent = lnAddr;
     document.getElementById('sats-gateway').textContent = fmtSats(sw.gateway_sats);
-    document.getElementById('sats-local').textContent = fmtSats(sw.local_sats);
-    document.getElementById('sats-total').textContent = fmtSats(sw.total_sats);
     document.getElementById('sats-usd').textContent = sw.usd_approx ? '$' + sw.usd_approx.toFixed(2) : '$0.00';
-    document.getElementById('btn-claim').disabled = !sw.gateway_sats;
-    document.getElementById('btn-claim').style.opacity = sw.gateway_sats ? '1' : '0.5';
-    document.getElementById('btn-export').disabled = !sw.local_sats;
-    document.getElementById('btn-export').style.opacity = sw.local_sats ? '1' : '0.5';
-
-    // QR code for latest token (auto-refresh)
-    var qrSec = document.getElementById('qr-section');
-    if (sw.last_token && qrReady) {
-      if (sw.last_token !== lastQrToken) {
-        lastQrToken = sw.last_token;
-        renderQR(sw.last_token);
-      }
-      qrSec.style.display = '';
-      var hist = sw.token_history || [];
-      var topSats = hist.length > 0 ? hist[0].sats : 0;
-      document.getElementById('qr-amount').textContent = topSats ? topSats.toLocaleString() + ' sats' : '';
-    } else if (!sw.last_token) {
-      qrSec.style.display = 'none';
-    }
-
-    // Token history
-    var histEl = document.getElementById('token-history');
-    var histList = document.getElementById('token-history-list');
-    var hist = sw.token_history || [];
-    if (hist.length > 1) {
-      histEl.style.display = '';
-      histList.innerHTML = hist.slice(1).map(function(t) {
-        var dt = new Date(t.claimed_at);
-        var ts = isNaN(dt) ? t.claimed_at : dt.toLocaleString();
-        return '<div style="display:flex;justify-content:space-between;padding:6px 0;border-bottom:1px solid #1a1a24;font-size:13px">' +
-          '<span style="color:#f7931a">' + (t.sats||0).toLocaleString() + ' sats</span>' +
-          '<span style="color:#888;cursor:pointer" onclick="showHistoryToken(\'' + escapeAttr(t.token) + '\')">' + ts + ' [show]</span></div>';
-      }).join('');
-    } else {
-      histEl.style.display = 'none';
-    }
+  } else {
+    document.getElementById('wallet-setup').style.display = '';
+    document.getElementById('wallet-active').style.display = 'none';
   }
 
   // BTC Price
@@ -680,46 +698,53 @@ function update(d) {
   document.getElementById('updated').textContent = 'updated ' + new Date().toLocaleTimeString();
 }
 
-function escapeAttr(s) { return s.replace(/'/g, "\\'").replace(/\\/g, '\\\\'); }
-var lastQrToken = '';
-var qrReady = false;
-
-// Minimal QR code generator (client-side, no external dependency).
-// Loads qrcode.min.js from CDN; falls back gracefully if offline.
-var qrScript = document.createElement('script');
-qrScript.src = 'https://cdn.jsdelivr.net/npm/qrcode-generator@1.4.4/qrcode.min.js';
-qrScript.onload = function() { qrReady = true; if (lastQrToken) renderQR(lastQrToken); };
-qrScript.onerror = function() { /* graceful degradation — QR hidden, token still copyable */ };
-document.head.appendChild(qrScript);
-
-function renderQR(text) {
-  if (typeof qrcode === 'undefined') return;
-  var canvas = document.getElementById('qr-canvas');
-  // Use error correction L, auto-detect version
-  var qr = qrcode(0, 'L');
-  qr.addData(text);
-  qr.make();
-  var size = qr.getModuleCount();
-  var scale = Math.max(4, Math.floor(200 / size));
-  canvas.width = size * scale;
-  canvas.height = size * scale;
-  var ctx = canvas.getContext('2d');
-  ctx.fillStyle = '#ffffff';
-  ctx.fillRect(0, 0, canvas.width, canvas.height);
-  ctx.fillStyle = '#000000';
-  for (var row = 0; row < size; row++) {
-    for (var col = 0; col < size; col++) {
-      if (qr.isDark(row, col)) {
-        ctx.fillRect(col * scale, row * scale, scale, scale);
-      }
-    }
+async function saveLightningAddress() {
+  var addr = document.getElementById('ln-address-input').value.trim();
+  var errEl = document.getElementById('ln-save-error');
+  errEl.style.display = 'none';
+  if (!addr || !addr.includes('@')) {
+    errEl.textContent = 'Enter a valid Lightning address (e.g. yourname@minibits.cash)';
+    errEl.style.display = '';
+    return;
   }
+  var btn = document.getElementById('btn-save-ln');
+  btn.disabled = true; btn.textContent = 'Saving...';
+  try {
+    var r = await fetch('/api/set-lightning-address', {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({address:addr})});
+    var data = await r.json();
+    if (data.error) { errEl.textContent = data.error; errEl.style.display = ''; return; }
+    poll(); // refresh immediately
+  } catch(e) { errEl.textContent = 'Failed: ' + e.message; errEl.style.display = ''; }
+  finally { btn.disabled = false; btn.textContent = 'Save & Start Earning'; }
 }
 
-function showHistoryToken(token) {
-  document.getElementById('claim-token').value = token;
-  document.getElementById('claim-amount').textContent = '';
-  document.getElementById('claim-result').style.display = '';
+async function saveLightningAddressEdit() {
+  var addr = document.getElementById('ln-address-edit').value.trim();
+  var errEl = document.getElementById('ln-edit-error');
+  errEl.style.display = 'none';
+  if (!addr || !addr.includes('@')) {
+    errEl.textContent = 'Enter a valid Lightning address';
+    errEl.style.display = '';
+    return;
+  }
+  try {
+    var r = await fetch('/api/set-lightning-address', {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({address:addr})});
+    var data = await r.json();
+    if (data.error) { errEl.textContent = data.error; errEl.style.display = ''; return; }
+    document.getElementById('edit-ln-section').style.display = 'none';
+    poll();
+  } catch(e) { errEl.textContent = 'Failed: ' + e.message; errEl.style.display = ''; }
+}
+
+function toggleEditLnAddress() {
+  var sec = document.getElementById('edit-ln-section');
+  if (sec.style.display === 'none') {
+    sec.style.display = '';
+    document.getElementById('ln-address-edit').value = document.getElementById('ln-address-display').textContent;
+    document.getElementById('ln-address-edit').focus();
+  } else {
+    sec.style.display = 'none';
+  }
 }
 
 async function poll() {

@@ -92,6 +92,28 @@ func (r *Router) SetModel(model string) {
 	r.conn.SetRegistration(payload)
 }
 
+// SetLightningAddress updates the provider's Lightning address and re-registers
+// with the gateway so it knows where to send auto-payouts.
+func (r *Router) SetLightningAddress(addr string) {
+	r.lightningAddress = addr
+	// Rebuild registration with the current model.
+	r.conn.mu.RLock()
+	model := r.conn.model
+	r.conn.mu.RUnlock()
+
+	var models []string
+	if model != "" {
+		models = []string{model}
+	}
+	payload, err := BuildRegistration(r.nodeID, r.apiKey, r.wallet, r.referralCode, r.lightningAddress, r.region, r.version, r.gpuInfo, models)
+	if err != nil {
+		log.Printf("owlrun: gateway: rebuild registration (lightning address): %v", err)
+		return
+	}
+	r.conn.SetRegistration(payload)
+	log.Printf("owlrun: gateway: lightning address updated, will re-register on next reconnect")
+}
+
 // Connect starts the gateway WS lifecycle. Non-blocking.
 func (r *Router) Connect() {
 	r.conn.Connect()

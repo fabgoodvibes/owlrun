@@ -197,6 +197,16 @@ func (a *Agent) onReady() {
 		a.dash.SetClaimer(func(amountSats int64) (string, error) {
 			return a.ecash.Claim(amountSats)
 		})
+		a.dash.SetLightningAddressSetter(func(addr string) error {
+			if err := config.SaveLightningAddress(addr); err != nil {
+				return err
+			}
+			a.mu.Lock()
+			a.cfg.Account.LightningAddress = addr
+			a.mu.Unlock()
+			a.gateway.SetLightningAddress(addr)
+			return nil
+		})
 	}
 
 	go a.gpuMonitor.Start()
@@ -625,6 +635,7 @@ func (a *Agent) statusSnapshot() dashboard.Status {
 	s.Gateway.TokensToday = gwStats.TokensToday
 	s.Gateway.EarnedTodayUSD = gwStats.EarnedTodayUSD
 	s.Gateway.QueueDepthGlobal = gwStats.QueueDepthGlobal
+	s.LightningAddress = a.cfg.Account.LightningAddress
 
 	// BTC price from gateway
 	s.BtcPrice = dashboard.BtcPriceInfo{

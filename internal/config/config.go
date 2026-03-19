@@ -137,6 +137,20 @@ func persistNodeID(id string) {
 	_ = f.SaveTo(path)
 }
 
+// SaveLightningAddress persists a Lightning address to the config file.
+func SaveLightningAddress(addr string) error {
+	path := Path()
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		return err
+	}
+	f, err := ini.LooseLoad(path)
+	if err != nil {
+		f = ini.Empty()
+	}
+	f.Section("account").Key("lightning_address").SetValue(addr)
+	return f.SaveTo(path)
+}
+
 // Path returns the default config file location: ~/.owlrun/owlrun.conf
 func Path() string {
 	home, err := os.UserHomeDir()
