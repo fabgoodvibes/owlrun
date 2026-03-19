@@ -367,7 +367,7 @@ if [[ ! -f "$CONFIG_FILE" ]]; then
     echo -e "  Config file: $CONFIG_FILE"
     echo ""
     read -rp "  Provider key (press Enter to skip): " API_KEY
-    read -rp "  Solana wallet for payouts (press Enter to skip): " WALLET
+    read -rp "  Lightning address for payouts (press Enter to skip): " WALLET
     read -rp "  Referral code (press Enter to skip): " REFERRAL
     write_config "$NODE_ID" "${API_KEY:-}" "${WALLET:-}" "${REFERRAL:-}"
   fi

@@ -33,7 +33,7 @@ type Config struct {
 type AccountConfig struct {
 	NodeID           string // stable UUID generated once, persisted to conf
 	APIKey           string
-	Wallet           string // Solana pubkey (base58) or EVM address (0x...)
+	Wallet           string // Legacy payout address (deprecated — use LightningAddress)
 	ReferralCode     string // affiliate referral code (owlr_ref_<code>), optional
 	LightningAddress string // Lightning address for BTC payouts (e.g. user@walletofsatoshi.com), optional
 	RedeemThreshold  int    // sats threshold for auto-payout via Lightning (default 500)

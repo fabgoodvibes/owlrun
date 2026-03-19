@@ -283,7 +283,7 @@ func (d *daemon) statusSnapshot() dashboard.Status {
 	s.Network = buildinfo.Network
 	s.Wallet.Address = d.cfg.Account.Wallet
 	if config.NeedsWallet(&d.cfg) {
-		s.Wallet.Warning = "Set your Solana wallet in <code>~/.owlrun/owlrun.conf</code> under <code>[account]</code> → <code>wallet = YOUR_SOLANA_PUBKEY</code> to receive payouts."
+		s.Wallet.Warning = "Set your Lightning address in the <a href=\"http://localhost:19131\" style=\"color:#f7931a\">dashboard</a> to start earning Bitcoin."
 	}
 	switch st {
 	case stateEarning:

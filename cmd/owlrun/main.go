@@ -26,7 +26,7 @@ func main() {
 	}
 
 	if config.NeedsWallet(&cfg) {
-		log.Printf("owlrun: WARNING — no payout wallet configured. Edit %s and set [account] wallet = YOUR_SOLANA_PUBKEY", config.Path())
+		log.Printf("owlrun: WARNING — no payout wallet configured. Set your Lightning address at http://localhost:19131 or edit %s", config.Path())
 	}
 
 	// Start the local dashboard server (port 19131).

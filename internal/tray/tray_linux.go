@@ -359,7 +359,7 @@ func (d *sniDaemon) applyStateLocked() {
 	case linuxMissingWallet:
 		icon = d.iconBlue
 		label = "🔵 Wallet not set"
-		desc = "Set your Solana wallet to start earning"
+		desc = "Set your Lightning address to start earning"
 	case linuxError:
 		icon = d.iconRed
 		label = "🔴 Error"
@@ -701,7 +701,7 @@ func (d *sniDaemon) statusSnapshot() dashboard.Status {
 	s.Network = buildinfo.Network
 	s.Wallet.Address = d.cfg.Account.Wallet
 	if config.NeedsWallet(&d.cfg) {
-		s.Wallet.Warning = "Set your Solana wallet in <code>~/.owlrun/owlrun.conf</code> under <code>[account]</code> → <code>wallet = YOUR_SOLANA_PUBKEY</code> to receive payouts."
+		s.Wallet.Warning = "Set your Lightning address in the <a href=\"http://localhost:19131\" style=\"color:#f7931a\">dashboard</a> to start earning Bitcoin."
 	}
 	switch st {
 	case linuxEarning:

@@ -32,7 +32,7 @@ Your machine                           Owlrun Gateway                    Buyer
 2. When a buyer sends an inference request, the gateway pushes a job to your node
 3. Your node fetches the buyer's request, forwards it to local Ollama, and streams the response back
 4. You earn 91% of the job revenue; the gateway takes a single-digit routing margin
-5. Payouts are immediate — every microtransaction settles instantly to your wallet. We never custody your funds. (Bitcoin Lightning is WIP)
+5. You earn Bitcoin — auto-paid to your Lightning wallet every 60 seconds. We never custody your funds.
 
 **Volume tiers** reward high-throughput nodes with a bigger share:
 
@@ -61,7 +61,7 @@ Config file: `~/.owlrun/owlrun.conf`
 ```ini
 [account]
 api_key       = owlr_prov_...      # From https://owlrun.me
-wallet        = <solana-address>   # Payout address
+lightning_address = user@minibits.cash  # Lightning address for BTC payouts
 referral_code =                    # Optional affiliate code (owlr_ref_...)
 
 [marketplace]

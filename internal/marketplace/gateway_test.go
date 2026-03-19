@@ -17,7 +17,7 @@ func TestBuildRegistration_Fields(t *testing.T) {
 	}
 	models := []string{"llama3:8b", "mistral:7b"}
 
-	raw, err := BuildRegistration("node-123", "sk-key", "SolanaWallet", "owlr_ref_abc", "user@walletofsatoshi.com", 500, "us-east", "v0.1.0", info, models)
+	raw, err := BuildRegistration("node-123", "sk-key", "TestWallet", "owlr_ref_abc", "user@walletofsatoshi.com", 500, "us-east", "v0.1.0", info, models)
 	if err != nil {
 		t.Fatalf("BuildRegistration error: %v", err)
 	}
@@ -33,8 +33,8 @@ func TestBuildRegistration_Fields(t *testing.T) {
 	if p.APIKey != "sk-key" {
 		t.Errorf("APIKey = %q, want sk-key", p.APIKey)
 	}
-	if p.Wallet != "SolanaWallet" {
-		t.Errorf("Wallet = %q, want SolanaWallet", p.Wallet)
+	if p.Wallet != "TestWallet" {
+		t.Errorf("Wallet = %q, want TestWallet", p.Wallet)
 	}
 	if p.Version != "v0.1.0" {
 		t.Errorf("Version = %q, want v0.1.0", p.Version)

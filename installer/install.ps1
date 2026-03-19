@@ -290,7 +290,7 @@ if (-not (Test-Path $CONFIG_FILE)) {
     Write-Host "  Config file: $CONFIG_FILE" -ForegroundColor DarkGray
     Write-Host ""
     $apiKey   = Read-Host "  Provider key (press Enter to skip)"
-    $wallet   = Read-Host "  Solana wallet address for payouts (press Enter to skip)"
+    $wallet   = Read-Host "  Lightning address for payouts (press Enter to skip)"
     $referral = Read-Host "  Referral code (press Enter to skip)"
     Write-DefaultConfig -NodeId $nodeId -ApiKey $apiKey.Trim() -Wallet $wallet.Trim() -ReferralCode $referral.Trim()
   }
