@@ -233,53 +233,55 @@ const dashboardHTML = `<!DOCTYPE html>
 <title>Owlrun Dashboard</title>
 <style>
   * { box-sizing: border-box; margin: 0; padding: 0; }
-  body { background: #0f0f13; color: #f0f0f5; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; font-size: 16px; padding: 24px; }
-  h1 { font-size: 24px; font-weight: 600; margin-bottom: 20px; color: #fff; letter-spacing: -0.3px; }
-  h1 span { opacity: 0.6; font-weight: 400; font-size: 15px; margin-left: 8px; }
-  .grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(280px, 1fr)); gap: 16px; }
-  .card { background: #1a1a24; border: 1px solid #2a2a38; border-radius: 10px; padding: 20px; }
-  .card-title { font-size: 13px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.8px; color: #8888a0; margin-bottom: 14px; }
-  .stat { display: flex; justify-content: space-between; align-items: center; margin-bottom: 12px; }
+  body { background: #0f0f13; color: #e8e8f0; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; font-size: 17px; padding: 28px 36px; }
+  h1 { font-size: 26px; font-weight: 600; margin-bottom: 22px; color: #fff; letter-spacing: -0.3px; }
+  h1 span { opacity: 0.6; font-weight: 400; font-size: 16px; margin-left: 8px; }
+  .grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(320px, 1fr)); gap: 18px; }
+  .card { background: #1a1a24; border: 1px solid #2a2a38; border-radius: 12px; padding: 24px; }
+  .card-title { font-size: 14px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.8px; color: #aaaac0; margin-bottom: 16px; }
+  .card-wide { grid-column: 1 / -1; }
+  .stat { display: flex; justify-content: space-between; align-items: center; margin-bottom: 14px; min-height: 30px; }
   .stat:last-child { margin-bottom: 0; }
-  .stat-label { color: #a0a0b8; }
-  .stat-value { font-weight: 500; color: #f0f0f5; font-variant-numeric: tabular-nums; }
-  .state-badge { display: inline-flex; align-items: center; gap: 7px; font-weight: 600; font-size: 17px; }
-  .dot { width: 10px; height: 10px; border-radius: 50%; flex-shrink: 0; }
+  .stat-label { color: #d0d0e0; font-size: 16px; }
+  .stat-value { font-weight: 500; color: #ededf5; font-variant-numeric: tabular-nums; font-size: 16px; }
+  .state-badge { display: inline-flex; align-items: center; gap: 8px; font-weight: 600; font-size: 18px; }
+  .dot { width: 11px; height: 11px; border-radius: 50%; flex-shrink: 0; }
   .dot-green  { background: #22c55e; box-shadow: 0 0 8px #22c55e88; }
   .dot-yellow { background: #eab308; box-shadow: 0 0 8px #eab30888; }
   .dot-grey   { background: #6b7280; }
   .dot-blue   { background: #3b82f6; box-shadow: 0 0 8px #3b82f688; }
   .dot-red    { background: #ef4444; box-shadow: 0 0 8px #ef444488; }
-  .bar-wrap { background: #2a2a38; border-radius: 4px; height: 6px; width: 100px; overflow: hidden; }
+  .bar-wrap { background: #2a2a38; border-radius: 4px; height: 7px; width: 110px; overflow: hidden; }
   .bar-fill { height: 100%; border-radius: 4px; transition: width 0.4s ease; }
   .bar-green  { background: #22c55e; }
   .bar-yellow { background: #eab308; }
   .bar-red    { background: #ef4444; }
-  .earnings-big { font-size: 32px; font-weight: 700; color: #22c55e; font-variant-numeric: tabular-nums; margin-bottom: 4px; }
-  .earnings-sub { font-size: 14px; color: #777; }
-  .node-id { font-size: 12px; color: #666; font-family: monospace; margin-top: 6px; }
+  .earnings-big { font-size: 36px; font-weight: 700; color: #22c55e; font-variant-numeric: tabular-nums; margin-bottom: 4px; }
+  .earnings-sub { font-size: 15px; color: #aaaabb; }
+  .node-id { font-size: 14px; color: #9999b0; font-family: monospace; margin-top: 6px; }
   .connected { color: #22c55e; }
   .disconnected { color: #ef4444; }
-  #updated { position: fixed; bottom: 16px; right: 20px; font-size: 12px; color: #555; }
-  .charts-section { margin-top: 24px; padding-bottom: 40px; }
-  .tab-bar { display: flex; gap: 0; margin-bottom: 16px; }
-  .tab-bar button { background: #1a1a24; border: 1px solid #2a2a38; color: #a0a0b8; padding: 8px 18px; font-size: 14px; font-weight: 600; cursor: pointer; transition: all 0.2s; }
+  #updated { position: fixed; bottom: 16px; right: 24px; font-size: 13px; color: #888; }
+  .charts-section { margin-top: 28px; padding-bottom: 44px; }
+  .tab-bar { display: flex; gap: 0; margin-bottom: 18px; }
+  .tab-bar button { background: #1a1a24; border: 1px solid #2a2a38; color: #d0d0e0; padding: 10px 20px; font-size: 15px; font-weight: 600; cursor: pointer; transition: all 0.2s; }
   .tab-bar button:first-child { border-radius: 6px 0 0 6px; }
   .tab-bar button:last-child { border-radius: 0 6px 6px 0; }
   .tab-bar button.active { background: #2a2a38; color: #f0f0f5; border-color: #3a3a4a; }
-  .chart-grid { display: grid; grid-template-columns: 1fr; gap: 16px; }
-  .chart-card { background: #1a1a24; border: 1px solid #2a2a38; border-radius: 10px; padding: 18px; }
-  .chart-card .card-title { font-size: 13px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.8px; color: #8888a0; margin-bottom: 14px; }
-  .wallet-warn { background: #2d1f00; border: 1px solid #b45309; border-radius: 8px; padding: 14px 18px; margin-bottom: 16px; display: none; }
-  .wallet-warn .warn-title { color: #f59e0b; font-weight: 600; font-size: 13px; margin-bottom: 4px; }
-  .wallet-warn .warn-body { color: #d4a04a; font-size: 12px; line-height: 1.5; }
-  .wallet-warn code { background: #1a1a24; padding: 2px 6px; border-radius: 4px; font-size: 11px; color: #e2e2e8; }
-  .network-badge { display: inline-block; background: #b45309; color: #fff; font-size: 10px; font-weight: 600; padding: 2px 8px; border-radius: 4px; margin-left: 8px; text-transform: uppercase; vertical-align: middle; }
-  .broadcast-empty { color: #666; font-size: 14px; font-style: italic; padding: 8px 0; }
-  .broadcast-item { display: flex; justify-content: space-between; align-items: flex-start; gap: 12px; padding: 10px 0; border-bottom: 1px solid #2a2a38; }
+  .chart-grid { display: grid; grid-template-columns: 1fr; gap: 18px; }
+  .chart-card { background: #1a1a24; border: 1px solid #2a2a38; border-radius: 12px; padding: 20px; }
+  .chart-card .card-title { font-size: 14px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.8px; color: #aaaac0; margin-bottom: 14px; }
+  .wallet-warn { background: #2d1f00; border: 1px solid #b45309; border-radius: 8px; padding: 16px 20px; margin-bottom: 18px; display: none; }
+  .wallet-warn .warn-title { color: #f59e0b; font-weight: 600; font-size: 15px; margin-bottom: 4px; }
+  .wallet-warn .warn-body { color: #e0b060; font-size: 14px; line-height: 1.5; }
+  .wallet-warn code { background: #1a1a24; padding: 2px 6px; border-radius: 4px; font-size: 13px; color: #e2e2e8; }
+  .network-badge { display: inline-block; background: #b45309; color: #fff; font-size: 11px; font-weight: 600; padding: 3px 9px; border-radius: 4px; margin-left: 8px; text-transform: uppercase; vertical-align: middle; }
+  .broadcast-empty { color: #9999b0; font-size: 15px; font-style: italic; padding: 8px 0; }
+  .broadcast-item { display: flex; justify-content: space-between; align-items: flex-start; gap: 14px; padding: 12px 0; border-bottom: 1px solid #2a2a38; }
   .broadcast-item:last-child { border-bottom: none; }
-  .broadcast-msg { color: #f0f0f5; font-size: 15px; flex: 1; }
-  .broadcast-time { color: #777; font-size: 13px; white-space: nowrap; font-variant-numeric: tabular-nums; }
+  .broadcast-msg { color: #e8e8f0; font-size: 16px; flex: 1; }
+  .broadcast-time { color: #aaaabb; font-size: 14px; white-space: nowrap; font-variant-numeric: tabular-nums; }
+  .legend-row { display: inline-flex; align-items: center; gap: 6px; margin-right: 18px; font-size: 14px; color: #aaaabb; }
 </style>
 </head>
 <body>
@@ -290,10 +292,17 @@ const dashboardHTML = `<!DOCTYPE html>
 </div>
 <div class="grid">
 
+  <!-- ═══ Hero row: Status + Earnings ═══ -->
   <div class="card">
     <div class="card-title">Status</div>
     <div id="state-badge" class="state-badge">—</div>
     <div class="node-id" id="node-id"></div>
+    <div style="margin-top:14px;border-top:1px solid #2a2a38;padding-top:14px">
+      <div class="stat">
+        <span class="stat-label">Model</span>
+        <span class="stat-value" id="model" style="max-width:160px;text-align:right">—</span>
+      </div>
+    </div>
   </div>
 
   <div class="card">
@@ -306,84 +315,10 @@ const dashboardHTML = `<!DOCTYPE html>
     </div>
   </div>
 
-  <div class="card">
-    <div class="card-title">GPU</div>
-    <div class="stat"><span class="stat-label" id="gpu-name" style="color:#aaa;font-size:12px"></span></div>
-    <div class="stat">
-      <span class="stat-label">Utilisation</span>
-      <span class="stat-value" style="display:flex;align-items:center;gap:8px">
-        <span id="util-pct">—</span>
-        <div class="bar-wrap"><div class="bar-fill bar-green" id="util-bar" style="width:0%"></div></div>
-      </span>
-    </div>
-    <div class="stat">
-      <span class="stat-label">VRAM free</span>
-      <span class="stat-value" id="vram-free">—</span>
-    </div>
-    <div class="stat">
-      <span class="stat-label">Temperature</span>
-      <span class="stat-value" id="temp">—</span>
-    </div>
-    <div class="stat">
-      <span class="stat-label">Power draw</span>
-      <span class="stat-value" id="power">—</span>
-    </div>
-  </div>
-
-  <div class="card">
-    <div class="card-title">Model</div>
-    <div class="stat">
-      <span class="stat-label">Loaded</span>
-      <span class="stat-value" id="model" style="font-size:12px;max-width:160px;text-align:right">—</span>
-    </div>
-  </div>
-
-  <div class="card">
-    <div class="card-title">Gateway</div>
-    <div class="stat">
-      <span class="stat-label">Connection</span>
-      <span class="stat-value" id="gw-connected">—</span>
-    </div>
-    <div class="stat">
-      <span class="stat-label">Jobs today</span>
-      <span class="stat-value" id="gw-jobs">—</span>
-    </div>
-    <div class="stat">
-      <span class="stat-label">Tokens today</span>
-      <span class="stat-value" id="gw-tokens">—</span>
-    </div>
-    <div class="stat">
-      <span class="stat-label">Queue depth</span>
-      <span class="stat-value" id="gw-queue">—</span>
-    </div>
-    <div class="stat">
-      <span class="stat-label">Next payout</span>
-      <span class="stat-value" id="gw-payout">—</span>
-    </div>
-  </div>
-
-  <div class="card">
-    <div class="card-title">Disk</div>
-    <div class="stat">
-      <span class="stat-label">Free</span>
-      <span class="stat-value" style="display:flex;align-items:center;gap:8px">
-        <span id="disk-free">—</span>
-        <div class="bar-wrap"><div class="bar-fill bar-green" id="disk-bar" style="width:0%"></div></div>
-      </span>
-    </div>
-    <div class="stat">
-      <span class="stat-label">Total</span>
-      <span class="stat-value" id="disk-total">—</span>
-    </div>
-    <div class="stat">
-      <span class="stat-label">Path</span>
-      <span class="stat-value" style="font-size:11px;color:#666;max-width:160px;text-align:right;word-break:break-all" id="disk-path">—</span>
-    </div>
-  </div>
-
+  <!-- ═══ Financial row: Sats Wallet + BTC Price ═══ -->
   <div class="card" id="sats-card">
     <div class="card-title">Sats Wallet</div>
-    <div id="sats-inactive" style="color:#666;font-size:14px;font-style:italic;padding:8px 0;text-align:center;display:none">
+    <div id="sats-inactive" style="color:#9999b0;font-size:15px;font-style:italic;padding:8px 0;text-align:center;display:none">
       Sats payments not yet active on this gateway
     </div>
     <div id="sats-content">
@@ -404,13 +339,13 @@ const dashboardHTML = `<!DOCTYPE html>
         <span class="stat-value" id="sats-usd">$0.00</span>
       </div>
       <div style="margin-top:12px;display:flex;gap:8px">
-        <button id="btn-claim" onclick="claimEcash()" style="flex:1;padding:8px 16px;background:#f7931a;color:#fff;border:none;border-radius:6px;cursor:pointer;font-weight:600;font-size:14px">Claim All</button>
-        <button id="btn-export" onclick="exportToken()" style="flex:1;padding:8px 16px;background:#2a2a38;color:#a0a0b8;border:1px solid #3a3a48;border-radius:6px;cursor:pointer;font-size:14px">Export</button>
+        <button id="btn-claim" onclick="claimEcash()" style="flex:1;padding:10px 16px;background:#f7931a;color:#fff;border:none;border-radius:8px;cursor:pointer;font-weight:600;font-size:14px">Claim All</button>
+        <button id="btn-export" onclick="exportToken()" style="flex:1;padding:10px 16px;background:#2a2a38;color:#d0d0e0;border:1px solid #3a3a48;border-radius:8px;cursor:pointer;font-size:15px">Export</button>
       </div>
       <div id="claim-result" style="display:none;margin-top:12px">
-        <div style="color:#666;font-size:12px;margin-bottom:4px">Cashu token (paste into any Cashu wallet):</div>
-        <textarea id="claim-token" readonly style="width:100%;height:80px;background:#1a1a24;color:#f7931a;border:1px solid #3a3a48;border-radius:6px;padding:8px;font-size:11px;font-family:monospace;resize:vertical;box-sizing:border-box"></textarea>
-        <button onclick="copyToken()" style="margin-top:4px;padding:4px 12px;background:#2a2a38;color:#a0a0b8;border:1px solid #3a3a48;border-radius:4px;cursor:pointer;font-size:12px">Copy</button>
+        <div style="color:#aaaabb;font-size:14px;margin-bottom:4px">Cashu token (paste into any Cashu wallet):</div>
+        <textarea id="claim-token" readonly style="width:100%;height:80px;background:#0f0f13;color:#f7931a;border:1px solid #3a3a48;border-radius:8px;padding:10px;font-size:12px;font-family:monospace;resize:vertical;box-sizing:border-box"></textarea>
+        <button onclick="copyToken()" style="margin-top:6px;padding:6px 14px;background:#2a2a38;color:#d0d0e0;border:1px solid #3a3a48;border-radius:6px;cursor:pointer;font-size:14px">Copy</button>
       </div>
     </div>
   </div>
@@ -439,20 +374,92 @@ const dashboardHTML = `<!DOCTYPE html>
     </div>
   </div>
 
-  <div class="card" style="grid-column:1/-1">
+  <!-- ═══ Infrastructure row: Gateway + GPU ═══ -->
+  <div class="card">
+    <div class="card-title">Gateway</div>
+    <div class="stat">
+      <span class="stat-label">Connection</span>
+      <span class="stat-value" id="gw-connected">—</span>
+    </div>
+    <div class="stat">
+      <span class="stat-label">Jobs today</span>
+      <span class="stat-value" id="gw-jobs">—</span>
+    </div>
+    <div class="stat">
+      <span class="stat-label">Tokens today</span>
+      <span class="stat-value" id="gw-tokens">—</span>
+    </div>
+    <div class="stat">
+      <span class="stat-label">Queue depth</span>
+      <span class="stat-value" id="gw-queue">—</span>
+    </div>
+    <div class="stat">
+      <span class="stat-label">Next payout</span>
+      <span class="stat-value" id="gw-payout">—</span>
+    </div>
+  </div>
+
+  <div class="card">
+    <div class="card-title">GPU</div>
+    <div class="stat"><span class="stat-label" id="gpu-name" style="color:#d0d0e0;font-size:15px"></span></div>
+    <div class="stat">
+      <span class="stat-label">Utilisation</span>
+      <span class="stat-value" style="display:flex;align-items:center;gap:8px">
+        <span id="util-pct">—</span>
+        <div class="bar-wrap"><div class="bar-fill bar-green" id="util-bar" style="width:0%"></div></div>
+      </span>
+    </div>
+    <div class="stat">
+      <span class="stat-label">VRAM free</span>
+      <span class="stat-value" id="vram-free">—</span>
+    </div>
+    <div class="stat">
+      <span class="stat-label">Temperature</span>
+      <span class="stat-value" id="temp">—</span>
+    </div>
+    <div class="stat">
+      <span class="stat-label">Power draw</span>
+      <span class="stat-value" id="power">—</span>
+    </div>
+  </div>
+
+  <!-- ═══ Disk ═══ -->
+  <div class="card">
+    <div class="card-title">Disk</div>
+    <div class="stat">
+      <span class="stat-label">Free</span>
+      <span class="stat-value" style="display:flex;align-items:center;gap:8px">
+        <span id="disk-free">—</span>
+        <div class="bar-wrap"><div class="bar-fill bar-green" id="disk-bar" style="width:0%"></div></div>
+      </span>
+    </div>
+    <div class="stat">
+      <span class="stat-label">Total</span>
+      <span class="stat-value" id="disk-total">—</span>
+    </div>
+    <div class="stat">
+      <span class="stat-label">Path</span>
+      <span class="stat-value" style="font-size:14px;color:#aaaabb;max-width:200px;text-align:right;word-break:break-all" id="disk-path">—</span>
+    </div>
+  </div>
+
+  <!-- ═══ Notifications (full width) ═══ -->
+  <div class="card card-wide">
     <div class="card-title">Notifications</div>
     <div id="broadcasts">
       <div class="broadcast-empty">Broadcast notifications from the gateway will appear here.</div>
     </div>
   </div>
 
-  <div class="card">
-    <div class="card-title">Status Colors</div>
-    <div class="stat"><span class="state-badge"><span class="dot dot-green"></span>Connected & earning</span></div>
-    <div class="stat"><span class="state-badge"><span class="dot dot-yellow"></span>Getting ready</span></div>
-    <div class="stat"><span class="state-badge"><span class="dot dot-blue"></span>Wallet not set</span></div>
-    <div class="stat"><span class="state-badge"><span class="dot dot-red"></span>Error</span></div>
-    <div class="stat"><span class="state-badge"><span class="dot dot-grey"></span>Paused</span></div>
+  <!-- ═══ Legend (compact row) ═══ -->
+  <div class="card card-wide" style="padding:14px 22px;">
+    <div style="display:flex;flex-wrap:wrap;gap:4px 0">
+      <span class="legend-row"><span class="dot dot-green"></span>Earning</span>
+      <span class="legend-row"><span class="dot dot-yellow"></span>Getting ready</span>
+      <span class="legend-row"><span class="dot dot-blue"></span>Wallet not set</span>
+      <span class="legend-row"><span class="dot dot-red"></span>Error</span>
+      <span class="legend-row"><span class="dot dot-grey"></span>Paused</span>
+    </div>
   </div>
 
 </div>
