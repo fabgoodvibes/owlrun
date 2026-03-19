@@ -11,6 +11,7 @@ import (
 	"sync/atomic"
 
 	"github.com/fabgoodvibes/owlrun/internal/buildinfo"
+	"github.com/fabgoodvibes/owlrun/internal/cashu"
 	"github.com/fabgoodvibes/owlrun/internal/earnings"
 )
 
@@ -217,7 +218,12 @@ func (s *Server) handleClaimEcash(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	json.NewEncoder(w).Encode(map[string]string{"token": token})
+	// Parse token to get actual amount (may differ from requested due to power-of-2 denominations).
+	var amountSats uint64
+	if parsed, err := cashu.Deserialize(token); err == nil {
+		amountSats = parsed.TotalSats()
+	}
+	json.NewEncoder(w).Encode(map[string]any{"token": token, "amount_sats": amountSats})
 }
 
 func (s *Server) handleIndex(w http.ResponseWriter, r *http.Request) {
@@ -343,6 +349,7 @@ const dashboardHTML = `<!DOCTYPE html>
         <button id="btn-export" onclick="exportToken()" style="flex:1;padding:10px 16px;background:#2a2a38;color:#d0d0e0;border:1px solid #3a3a48;border-radius:8px;cursor:pointer;font-size:15px">Export</button>
       </div>
       <div id="claim-result" style="display:none;margin-top:12px">
+        <div style="color:#22c55e;font-size:15px;font-weight:600;margin-bottom:6px" id="claim-amount"></div>
         <div style="color:#aaaabb;font-size:14px;margin-bottom:4px">Cashu token (paste into any Cashu wallet):</div>
         <textarea id="claim-token" readonly style="width:100%;height:80px;background:#0f0f13;color:#f7931a;border:1px solid #3a3a48;border-radius:8px;padding:10px;font-size:12px;font-family:monospace;resize:vertical;box-sizing:border-box"></textarea>
         <button onclick="copyToken()" style="margin-top:6px;padding:6px 14px;background:#2a2a38;color:#d0d0e0;border:1px solid #3a3a48;border-radius:6px;cursor:pointer;font-size:14px">Copy</button>
@@ -635,6 +642,7 @@ async function claimEcash() {
     var data = await r.json();
     if (data.error) { alert('Claim failed: ' + data.error); return; }
     document.getElementById('claim-token').value = data.token;
+    document.getElementById('claim-amount').textContent = data.amount_sats ? data.amount_sats.toLocaleString() + ' sats claimed' : '';
     document.getElementById('claim-result').style.display = '';
   } catch(e) { alert('Claim failed: ' + e.message); }
   finally { btn.disabled = false; btn.textContent = 'Claim All'; }
