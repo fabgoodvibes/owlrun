@@ -63,6 +63,7 @@ type Status struct {
 
 	BtcPrice   BtcPriceInfo   `json:"btc_price"`
 	Broadcasts []BroadcastMsg `json:"broadcasts"`
+	SatsWallet SatsWalletInfo `json:"sats_wallet"`
 }
 
 // BtcPriceInfo is the BTC/USD pricing snapshot for the dashboard.
@@ -80,15 +81,30 @@ type BroadcastMsg struct {
 	Timestamp string `json:"timestamp"`
 }
 
+// SatsWalletInfo is the provider's ecash wallet state for the dashboard.
+type SatsWalletInfo struct {
+	GatewaySats int64   `json:"gateway_sats"` // unclaimed on gateway
+	LocalSats   int64   `json:"local_sats"`   // claimed proofs stored locally
+	TotalSats   int64   `json:"total_sats"`   // gateway + local
+	USDApprox   float64 `json:"usd_approx"`   // approximate USD value
+	ProofCount  int     `json:"proof_count"`   // number of local proofs
+	LastClaim   string  `json:"last_claim"`    // ISO timestamp
+}
+
 // StatusProvider is a function that returns the current status snapshot.
 // Set via SetProvider after the tray initialises its subsystems.
 type StatusProvider func() Status
+
+// ClaimFunc is called by the dashboard to claim ecash from the gateway.
+// amountSats 0 = claim all. Returns the cashuA... token string.
+type ClaimFunc func(amountSats int64) (token string, err error)
 
 // Server is the embedded web dashboard.
 type Server struct {
 	port     int
 	provider atomic.Pointer[StatusProvider]
 	tracker  atomic.Pointer[earnings.Tracker]
+	claimer  atomic.Pointer[ClaimFunc]
 }
 
 // New creates a dashboard Server on the given port.
@@ -110,6 +126,11 @@ func (s *Server) SetTracker(t *earnings.Tracker) {
 	s.tracker.Store(t)
 }
 
+// SetClaimer wires the ecash claim function into the dashboard.
+func (s *Server) SetClaimer(c ClaimFunc) {
+	s.claimer.Store(&c)
+}
+
 // Start launches the HTTP server in the background.
 // The listener is bound before returning so the port is ready for connections.
 func (s *Server) Start() error {
@@ -117,6 +138,7 @@ func (s *Server) Start() error {
 	mux.HandleFunc("/", s.handleIndex)
 	mux.HandleFunc("/api/status", s.handleStatus)
 	mux.HandleFunc("/api/history", s.handleHistory)
+	mux.HandleFunc("/api/claim-ecash", s.handleClaimEcash)
 	ln, err := net.Listen("tcp", fmt.Sprintf("127.0.0.1:%d", s.port))
 	if err != nil {
 		return err
@@ -164,6 +186,38 @@ func (s *Server) handleHistory(w http.ResponseWriter, r *http.Request) {
 		"period":  period,
 		"buckets": buckets,
 	})
+}
+
+func (s *Server) handleClaimEcash(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Content-Type", "application/json")
+	w.Header().Set("Access-Control-Allow-Origin", "*")
+
+	if r.Method != http.MethodPost {
+		w.WriteHeader(http.StatusMethodNotAllowed)
+		json.NewEncoder(w).Encode(map[string]string{"error": "POST required"})
+		return
+	}
+
+	c := s.claimer.Load()
+	if c == nil {
+		w.WriteHeader(http.StatusServiceUnavailable)
+		json.NewEncoder(w).Encode(map[string]string{"error": "wallet not ready"})
+		return
+	}
+
+	var req struct {
+		AmountSats int64 `json:"amount_sats"`
+	}
+	json.NewDecoder(r.Body).Decode(&req)
+
+	token, err := (*c)(req.AmountSats)
+	if err != nil {
+		w.WriteHeader(http.StatusBadGateway)
+		json.NewEncoder(w).Encode(map[string]string{"error": err.Error()})
+		return
+	}
+
+	json.NewEncoder(w).Encode(map[string]string{"token": token})
 }
 
 func (s *Server) handleIndex(w http.ResponseWriter, r *http.Request) {
@@ -327,6 +381,40 @@ const dashboardHTML = `<!DOCTYPE html>
     </div>
   </div>
 
+  <div class="card" id="sats-card">
+    <div class="card-title">Sats Wallet</div>
+    <div id="sats-inactive" style="color:#666;font-size:14px;font-style:italic;padding:8px 0;text-align:center;display:none">
+      Sats payments not yet active on this gateway
+    </div>
+    <div id="sats-content">
+      <div class="stat">
+        <span class="stat-label">Gateway (unclaimed)</span>
+        <span class="stat-value" id="sats-gateway">0</span>
+      </div>
+      <div class="stat">
+        <span class="stat-label">Local wallet</span>
+        <span class="stat-value" id="sats-local">0</span>
+      </div>
+      <div class="stat">
+        <span class="stat-label">Total</span>
+        <span class="stat-value" id="sats-total" style="color:#f7931a;font-weight:bold">0 sats</span>
+      </div>
+      <div class="stat">
+        <span class="stat-label">USD approx</span>
+        <span class="stat-value" id="sats-usd">$0.00</span>
+      </div>
+      <div style="margin-top:12px;display:flex;gap:8px">
+        <button id="btn-claim" onclick="claimEcash()" style="flex:1;padding:8px 16px;background:#f7931a;color:#fff;border:none;border-radius:6px;cursor:pointer;font-weight:600;font-size:14px">Claim All</button>
+        <button id="btn-export" onclick="exportToken()" style="flex:1;padding:8px 16px;background:#2a2a38;color:#a0a0b8;border:1px solid #3a3a48;border-radius:6px;cursor:pointer;font-size:14px">Export</button>
+      </div>
+      <div id="claim-result" style="display:none;margin-top:12px">
+        <div style="color:#666;font-size:12px;margin-bottom:4px">Cashu token (paste into any Cashu wallet):</div>
+        <textarea id="claim-token" readonly style="width:100%;height:80px;background:#1a1a24;color:#f7931a;border:1px solid #3a3a48;border-radius:6px;padding:8px;font-size:11px;font-family:monospace;resize:vertical;box-sizing:border-box"></textarea>
+        <button onclick="copyToken()" style="margin-top:4px;padding:4px 12px;background:#2a2a38;color:#a0a0b8;border:1px solid #3a3a48;border-radius:4px;cursor:pointer;font-size:12px">Copy</button>
+      </div>
+    </div>
+  </div>
+
   <div class="card">
     <div class="card-title">Bitcoin Price</div>
     <div class="stat">
@@ -466,6 +554,26 @@ function update(d) {
   diskBar.style.width = dk.free_pct + '%';
   diskBar.className = 'bar-fill ' + (dk.free_pct < 10 ? 'bar-red' : dk.free_pct < 30 ? 'bar-yellow' : 'bar-green');
 
+  // Sats Wallet
+  var sw = d.sats_wallet;
+  var satsActive = sw.gateway_sats || sw.local_sats || sw.total_sats;
+  if (!satsActive) {
+    document.getElementById('sats-inactive').style.display = '';
+    document.getElementById('sats-content').style.display = 'none';
+  } else {
+    document.getElementById('sats-inactive').style.display = 'none';
+    document.getElementById('sats-content').style.display = '';
+    function fmtSats(v) { return v ? v.toLocaleString() + ' sats' : '0 sats'; }
+    document.getElementById('sats-gateway').textContent = fmtSats(sw.gateway_sats);
+    document.getElementById('sats-local').textContent = fmtSats(sw.local_sats);
+    document.getElementById('sats-total').textContent = fmtSats(sw.total_sats);
+    document.getElementById('sats-usd').textContent = sw.usd_approx ? '$' + sw.usd_approx.toFixed(2) : '$0.00';
+    document.getElementById('btn-claim').disabled = !sw.gateway_sats;
+    document.getElementById('btn-claim').style.opacity = sw.gateway_sats ? '1' : '0.5';
+    document.getElementById('btn-export').disabled = !sw.local_sats;
+    document.getElementById('btn-export').style.opacity = sw.local_sats ? '1' : '0.5';
+  }
+
   // BTC Price
   var bp = d.btc_price;
   var btcCard = document.getElementById('btc-live').closest('.card');
@@ -516,6 +624,40 @@ async function poll() {
     document.getElementById('updated').textContent = 'connection lost…';
   }
   fetchHistory();
+}
+
+async function claimEcash() {
+  var btn = document.getElementById('btn-claim');
+  btn.disabled = true; btn.textContent = 'Claiming…';
+  try {
+    var r = await fetch('/api/claim-ecash', {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({amount_sats:0})});
+    var data = await r.json();
+    if (data.error) { alert('Claim failed: ' + data.error); return; }
+    document.getElementById('claim-token').value = data.token;
+    document.getElementById('claim-result').style.display = '';
+  } catch(e) { alert('Claim failed: ' + e.message); }
+  finally { btn.disabled = false; btn.textContent = 'Claim All'; }
+}
+
+async function exportToken() {
+  var btn = document.getElementById('btn-export');
+  btn.disabled = true;
+  try {
+    var r = await fetch('/api/status');
+    var d = await r.json();
+    if (d.sats_wallet && d.sats_wallet.local_sats > 0) {
+      alert('Export is available after claiming. Use Claim All first, then copy the token.');
+    } else {
+      alert('No local proofs to export.');
+    }
+  } finally { btn.disabled = false; }
+}
+
+function copyToken() {
+  var ta = document.getElementById('claim-token');
+  ta.select(); document.execCommand('copy');
+  var btn = event.target; btn.textContent = 'Copied!';
+  setTimeout(function() { btn.textContent = 'Copy'; }, 1500);
 }
 
 // ── Charts ──────────────────────────────────────────────────────────

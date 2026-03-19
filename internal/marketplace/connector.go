@@ -44,6 +44,7 @@ type GatewayStats struct {
 	NextPayoutEpoch  string
 	BtcPrice         BtcPrice
 	Broadcasts       []Broadcast
+	BalanceSats      int64
 }
 
 // wsMsg is the generic WebSocket message envelope used for all control traffic.
@@ -77,6 +78,7 @@ type wsMsg struct {
 	BtcDailyAvg      float64 `json:"btc_daily_avg,omitempty"`
 	BtcWeeklyAvg     float64 `json:"btc_weekly_avg,omitempty"`
 	BtcPriceStatus   string  `json:"btc_price_status,omitempty"`
+	BalanceSats      int64   `json:"balance_sats,omitempty"`
 
 	// Job complete (gateway → node)
 	Tokens    int     `json:"tokens,omitempty"`
@@ -413,6 +415,7 @@ func (c *Connector) readLoop(ctx context.Context, conn *websocket.Conn) error {
 					Status:     msg.BtcPriceStatus,
 				},
 				Broadcasts:       msg.Broadcasts,
+				BalanceSats:      msg.BalanceSats,
 			}
 			c.mu.Unlock()
 		case "job":

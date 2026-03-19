@@ -22,6 +22,7 @@ import (
 	"github.com/fabgoodvibes/owlrun/internal/idle"
 	"github.com/fabgoodvibes/owlrun/internal/inference"
 	"github.com/fabgoodvibes/owlrun/internal/marketplace"
+	"github.com/fabgoodvibes/owlrun/internal/wallet"
 )
 
 type state int
@@ -43,6 +44,7 @@ type daemon struct {
 	tracker   *earnings.Tracker
 	ollamaMgr *inference.Manager
 	gateway   *marketplace.Router
+	ecash     *wallet.Wallet
 
 	mu      sync.Mutex
 	st      state
@@ -57,12 +59,15 @@ func Run(cfg config.Config, dash *dashboard.Server) {
 	monitor := gpu.NewMonitor(info, 10*time.Second)
 	tracker := earnings.New()
 
+	w := wallet.New(cfg.Marketplace.Gateway, cfg.Account.APIKey)
+
 	d := &daemon{
 		cfg:       cfg,
 		nodeID:    nodeID,
 		gpuInfo:   info,
 		monitor:   monitor,
 		tracker:   tracker,
+		ecash:     w,
 		ollamaMgr: inference.New(info),
 		jobMode:   cfg.Idle.JobMode,
 	}
@@ -96,6 +101,9 @@ func Run(cfg config.Config, dash *dashboard.Server) {
 	if dash != nil {
 		dash.SetProvider(d.statusSnapshot)
 		dash.SetTracker(tracker)
+		dash.SetClaimer(func(amountSats int64) (string, error) {
+			return d.ecash.Claim(amountSats)
+		})
 	}
 
 	log.Printf("owlrun: node %s | gpu %s %s (%.0f GB VRAM)",
@@ -306,6 +314,19 @@ func (d *daemon) statusSnapshot() dashboard.Status {
 			Message:   b.Message,
 			Timestamp: b.Timestamp,
 		})
+	}
+
+	// Sats wallet
+	if d.ecash != nil {
+		ws := d.ecash.GetStats(gwStats.BalanceSats, gwStats.BtcPrice.LiveUsd)
+		s.SatsWallet = dashboard.SatsWalletInfo{
+			GatewaySats: ws.GatewaySats,
+			LocalSats:   ws.LocalSats,
+			TotalSats:   ws.TotalSats,
+			USDApprox:   ws.USDApprox,
+			ProofCount:  ws.ProofCount,
+			LastClaim:   ws.LastClaim,
+		}
 	}
 
 	diskInfo, err := disk.Check(disk.OllamaModelsDir())

@@ -28,6 +28,7 @@ import (
 	"github.com/fabgoodvibes/owlrun/internal/idle"
 	"github.com/fabgoodvibes/owlrun/internal/inference"
 	"github.com/fabgoodvibes/owlrun/internal/marketplace"
+	"github.com/fabgoodvibes/owlrun/internal/wallet"
 	"github.com/getlantern/systray"
 )
 
@@ -58,6 +59,7 @@ type Agent struct {
 	ollamaMgr      *inference.Manager
 	tracker        *earnings.Tracker
 	gateway        *marketplace.Router
+	ecash          *wallet.Wallet
 	dash           *dashboard.Server
 
 	// Tray menu items updated at runtime
@@ -85,6 +87,8 @@ func Run(cfg config.Config, dash *dashboard.Server) {
 	monitor := gpu.NewMonitor(info, 10*time.Second)
 	tracker := earnings.New()
 
+	w := wallet.New(cfg.Marketplace.Gateway, cfg.Account.APIKey)
+
 	a := &Agent{
 		cfg:        cfg,
 		nodeID:     nodeID,
@@ -93,6 +97,7 @@ func Run(cfg config.Config, dash *dashboard.Server) {
 		state:      StateIdle,
 		jobMode:    cfg.Idle.JobMode,
 		tracker:    tracker,
+		ecash:      w,
 		ollamaMgr:  inference.New(info),
 		dash:       dash,
 	}
@@ -186,6 +191,9 @@ func (a *Agent) onReady() {
 	if a.dash != nil {
 		a.dash.SetProvider(a.statusSnapshot)
 		a.dash.SetTracker(a.tracker)
+		a.dash.SetClaimer(func(amountSats int64) (string, error) {
+			return a.ecash.Claim(amountSats)
+		})
 	}
 
 	go a.gpuMonitor.Start()
@@ -631,6 +639,19 @@ func (a *Agent) statusSnapshot() dashboard.Status {
 			Message:   b.Message,
 			Timestamp: b.Timestamp,
 		})
+	}
+
+	// Sats wallet
+	if a.ecash != nil {
+		ws := a.ecash.GetStats(gwStats.BalanceSats, gwStats.BtcPrice.LiveUsd)
+		s.SatsWallet = dashboard.SatsWalletInfo{
+			GatewaySats: ws.GatewaySats,
+			LocalSats:   ws.LocalSats,
+			TotalSats:   ws.TotalSats,
+			USDApprox:   ws.USDApprox,
+			ProofCount:  ws.ProofCount,
+			LastClaim:   ws.LastClaim,
+		}
 	}
 
 	// Disk
