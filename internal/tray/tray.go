@@ -616,6 +616,23 @@ func (a *Agent) statusSnapshot() dashboard.Status {
 	s.Gateway.QueueDepthGlobal = gwStats.QueueDepthGlobal
 	s.Gateway.NextPayoutEpoch = gwStats.NextPayoutEpoch
 
+	// BTC price from gateway
+	s.BtcPrice = dashboard.BtcPriceInfo{
+		LiveUsd:    gwStats.BtcPrice.LiveUsd,
+		YesterdayFix: gwStats.BtcPrice.YesterdayFix,
+		DailyAvg:   gwStats.BtcPrice.DailyAvg,
+		WeeklyAvg:  gwStats.BtcPrice.WeeklyAvg,
+		Status:     gwStats.BtcPrice.Status,
+	}
+
+	// Map broadcasts from gateway to dashboard
+	for _, b := range gwStats.Broadcasts {
+		s.Broadcasts = append(s.Broadcasts, dashboard.BroadcastMsg{
+			Message:   b.Message,
+			Timestamp: b.Timestamp,
+		})
+	}
+
 	// Disk
 	diskInfo, err := disk.Check(disk.OllamaModelsDir())
 	if err == nil {

@@ -42,6 +42,8 @@ type GatewayStats struct {
 	EarnedTodayUSD   float64
 	QueueDepthGlobal int
 	NextPayoutEpoch  string
+	BtcPrice         BtcPrice
+	Broadcasts       []Broadcast
 }
 
 // wsMsg is the generic WebSocket message envelope used for all control traffic.
@@ -70,6 +72,11 @@ type wsMsg struct {
 	EarnedTodayUSD   float64 `json:"earned_today_usd,omitempty"`
 	QueueDepthGlobal int     `json:"queue_depth_global,omitempty"`
 	NextPayoutEpoch  string  `json:"next_payout_epoch,omitempty"`
+	BtcLiveUsd       float64 `json:"btc_live_usd,omitempty"`
+	BtcYesterdayFix  float64 `json:"btc_yesterday_fix,omitempty"`
+	BtcDailyAvg      float64 `json:"btc_daily_avg,omitempty"`
+	BtcWeeklyAvg     float64 `json:"btc_weekly_avg,omitempty"`
+	BtcPriceStatus   string  `json:"btc_price_status,omitempty"`
 
 	// Job complete (gateway → node)
 	Tokens    int     `json:"tokens,omitempty"`
@@ -77,8 +84,26 @@ type wsMsg struct {
 
 	// Reject (node → gateway)
 	Reason string `json:"reason,omitempty"`
+
+	// Broadcasts (gateway → node, in heartbeat_ack)
+	Broadcasts []Broadcast `json:"broadcasts,omitempty"`
 }
 
+// Broadcast is a gateway notification message.
+type Broadcast struct {
+	Message   string `json:"message"`
+	Timestamp string `json:"timestamp"`
+}
+
+
+// BtcPrice holds the gateway's BTC/USD pricing snapshot.
+type BtcPrice struct {
+	LiveUsd    float64 `json:"live_usd"`
+	YesterdayFix float64 `json:"yesterday_fix"`
+	DailyAvg   float64 `json:"daily_avg"`
+	WeeklyAvg  float64 `json:"weekly_avg"`
+	Status     string  `json:"status"`
+}
 // Connector manages the persistent WebSocket connection to the Owlrun Gateway.
 // It handles: registration, heartbeat, job assignment, proxy initiation, and
 // relaying gateway stats back to the dashboard.
@@ -380,6 +405,14 @@ func (c *Connector) readLoop(ctx context.Context, conn *websocket.Conn) error {
 				EarnedTodayUSD:   msg.EarnedTodayUSD,
 				QueueDepthGlobal: msg.QueueDepthGlobal,
 				NextPayoutEpoch:  msg.NextPayoutEpoch,
+				BtcPrice: BtcPrice{
+					LiveUsd:    msg.BtcLiveUsd,
+					YesterdayFix: msg.BtcYesterdayFix,
+					DailyAvg:   msg.BtcDailyAvg,
+					WeeklyAvg:  msg.BtcWeeklyAvg,
+					Status:     msg.BtcPriceStatus,
+				},
+				Broadcasts:       msg.Broadcasts,
 			}
 			c.mu.Unlock()
 		case "job":

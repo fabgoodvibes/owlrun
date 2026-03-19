@@ -60,6 +60,24 @@ type Status struct {
 		FreeGB  float64 `json:"free_gb"`
 		FreePct float64 `json:"free_pct"`
 	} `json:"disk"`
+
+	BtcPrice   BtcPriceInfo   `json:"btc_price"`
+	Broadcasts []BroadcastMsg `json:"broadcasts"`
+}
+
+// BtcPriceInfo is the BTC/USD pricing snapshot for the dashboard.
+type BtcPriceInfo struct {
+	LiveUsd      float64 `json:"live_usd"`
+	YesterdayFix float64 `json:"yesterday_fix"`
+	DailyAvg     float64 `json:"daily_avg"`
+	WeeklyAvg    float64 `json:"weekly_avg"`
+	Status       string  `json:"status"`
+}
+
+// BroadcastMsg is a gateway notification displayed on the dashboard.
+type BroadcastMsg struct {
+	Message   string `json:"message"`
+	Timestamp string `json:"timestamp"`
 }
 
 // StatusProvider is a function that returns the current status snapshot.
@@ -161,17 +179,17 @@ const dashboardHTML = `<!DOCTYPE html>
 <title>Owlrun Dashboard</title>
 <style>
   * { box-sizing: border-box; margin: 0; padding: 0; }
-  body { background: #0f0f13; color: #e2e2e8; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; font-size: 14px; padding: 24px; }
-  h1 { font-size: 20px; font-weight: 600; margin-bottom: 20px; color: #fff; letter-spacing: -0.3px; }
-  h1 span { opacity: 0.5; font-weight: 400; font-size: 13px; margin-left: 8px; }
+  body { background: #0f0f13; color: #f0f0f5; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; font-size: 16px; padding: 24px; }
+  h1 { font-size: 24px; font-weight: 600; margin-bottom: 20px; color: #fff; letter-spacing: -0.3px; }
+  h1 span { opacity: 0.6; font-weight: 400; font-size: 15px; margin-left: 8px; }
   .grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(280px, 1fr)); gap: 16px; }
-  .card { background: #1a1a24; border: 1px solid #2a2a38; border-radius: 10px; padding: 18px; }
-  .card-title { font-size: 11px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.8px; color: #666; margin-bottom: 14px; }
-  .stat { display: flex; justify-content: space-between; align-items: center; margin-bottom: 10px; }
+  .card { background: #1a1a24; border: 1px solid #2a2a38; border-radius: 10px; padding: 20px; }
+  .card-title { font-size: 13px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.8px; color: #8888a0; margin-bottom: 14px; }
+  .stat { display: flex; justify-content: space-between; align-items: center; margin-bottom: 12px; }
   .stat:last-child { margin-bottom: 0; }
-  .stat-label { color: #888; }
-  .stat-value { font-weight: 500; color: #e2e2e8; font-variant-numeric: tabular-nums; }
-  .state-badge { display: inline-flex; align-items: center; gap: 7px; font-weight: 600; font-size: 15px; }
+  .stat-label { color: #a0a0b8; }
+  .stat-value { font-weight: 500; color: #f0f0f5; font-variant-numeric: tabular-nums; }
+  .state-badge { display: inline-flex; align-items: center; gap: 7px; font-weight: 600; font-size: 17px; }
   .dot { width: 10px; height: 10px; border-radius: 50%; flex-shrink: 0; }
   .dot-green  { background: #22c55e; box-shadow: 0 0 8px #22c55e88; }
   .dot-yellow { background: #eab308; box-shadow: 0 0 8px #eab30888; }
@@ -183,27 +201,31 @@ const dashboardHTML = `<!DOCTYPE html>
   .bar-green  { background: #22c55e; }
   .bar-yellow { background: #eab308; }
   .bar-red    { background: #ef4444; }
-  .earnings-big { font-size: 28px; font-weight: 700; color: #22c55e; font-variant-numeric: tabular-nums; margin-bottom: 4px; }
-  .earnings-sub { font-size: 12px; color: #555; }
-  .node-id { font-size: 11px; color: #444; font-family: monospace; margin-top: 6px; }
+  .earnings-big { font-size: 32px; font-weight: 700; color: #22c55e; font-variant-numeric: tabular-nums; margin-bottom: 4px; }
+  .earnings-sub { font-size: 14px; color: #777; }
+  .node-id { font-size: 12px; color: #666; font-family: monospace; margin-top: 6px; }
   .connected { color: #22c55e; }
   .disconnected { color: #ef4444; }
-  #updated { position: fixed; bottom: 16px; right: 20px; font-size: 11px; color: #333; }
+  #updated { position: fixed; bottom: 16px; right: 20px; font-size: 12px; color: #555; }
   .charts-section { margin-top: 24px; padding-bottom: 40px; }
   .tab-bar { display: flex; gap: 0; margin-bottom: 16px; }
-  .tab-bar button { background: #1a1a24; border: 1px solid #2a2a38; color: #888; padding: 8px 18px; font-size: 12px; font-weight: 600; cursor: pointer; transition: all 0.2s; }
+  .tab-bar button { background: #1a1a24; border: 1px solid #2a2a38; color: #a0a0b8; padding: 8px 18px; font-size: 14px; font-weight: 600; cursor: pointer; transition: all 0.2s; }
   .tab-bar button:first-child { border-radius: 6px 0 0 6px; }
   .tab-bar button:last-child { border-radius: 0 6px 6px 0; }
-  .tab-bar button.active { background: #2a2a38; color: #e2e2e8; border-color: #3a3a4a; }
-  .chart-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; }
-  @media (max-width: 600px) { .chart-grid { grid-template-columns: 1fr; } }
-  .chart-card { background: #1a1a24; border: 1px solid #2a2a38; border-radius: 10px; padding: 18px; height: 260px; }
-  .chart-card .card-title { font-size: 11px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.8px; color: #666; margin-bottom: 14px; }
+  .tab-bar button.active { background: #2a2a38; color: #f0f0f5; border-color: #3a3a4a; }
+  .chart-grid { display: grid; grid-template-columns: 1fr; gap: 16px; }
+  .chart-card { background: #1a1a24; border: 1px solid #2a2a38; border-radius: 10px; padding: 18px; }
+  .chart-card .card-title { font-size: 13px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.8px; color: #8888a0; margin-bottom: 14px; }
   .wallet-warn { background: #2d1f00; border: 1px solid #b45309; border-radius: 8px; padding: 14px 18px; margin-bottom: 16px; display: none; }
   .wallet-warn .warn-title { color: #f59e0b; font-weight: 600; font-size: 13px; margin-bottom: 4px; }
   .wallet-warn .warn-body { color: #d4a04a; font-size: 12px; line-height: 1.5; }
   .wallet-warn code { background: #1a1a24; padding: 2px 6px; border-radius: 4px; font-size: 11px; color: #e2e2e8; }
   .network-badge { display: inline-block; background: #b45309; color: #fff; font-size: 10px; font-weight: 600; padding: 2px 8px; border-radius: 4px; margin-left: 8px; text-transform: uppercase; vertical-align: middle; }
+  .broadcast-empty { color: #666; font-size: 14px; font-style: italic; padding: 8px 0; }
+  .broadcast-item { display: flex; justify-content: space-between; align-items: flex-start; gap: 12px; padding: 10px 0; border-bottom: 1px solid #2a2a38; }
+  .broadcast-item:last-child { border-bottom: none; }
+  .broadcast-msg { color: #f0f0f5; font-size: 15px; flex: 1; }
+  .broadcast-time { color: #777; font-size: 13px; white-space: nowrap; font-variant-numeric: tabular-nums; }
 </style>
 </head>
 <body>
@@ -306,6 +328,37 @@ const dashboardHTML = `<!DOCTYPE html>
   </div>
 
   <div class="card">
+    <div class="card-title">Bitcoin Price</div>
+    <div class="stat">
+      <span class="stat-label">Live</span>
+      <span class="stat-value" id="btc-live">—</span>
+    </div>
+    <div class="stat">
+      <span class="stat-label">Yesterday's Fix</span>
+      <span class="stat-value" id="btc-owlrun">—</span>
+    </div>
+    <div class="stat">
+      <span class="stat-label">24h Avg</span>
+      <span class="stat-value" id="btc-daily">—</span>
+    </div>
+    <div class="stat">
+      <span class="stat-label">7d Avg</span>
+      <span class="stat-value" id="btc-weekly">—</span>
+    </div>
+    <div class="stat">
+      <span class="stat-label">Status</span>
+      <span class="stat-value" id="btc-status">—</span>
+    </div>
+  </div>
+
+  <div class="card" style="grid-column:1/-1">
+    <div class="card-title">Notifications</div>
+    <div id="broadcasts">
+      <div class="broadcast-empty">Broadcast notifications from the gateway will appear here.</div>
+    </div>
+  </div>
+
+  <div class="card">
     <div class="card-title">Status Colors</div>
     <div class="stat"><span class="state-badge"><span class="dot dot-green"></span>Connected & earning</span></div>
     <div class="stat"><span class="state-badge"><span class="dot dot-yellow"></span>Getting ready</span></div>
@@ -326,11 +379,11 @@ const dashboardHTML = `<!DOCTYPE html>
   <div class="chart-grid">
     <div class="chart-card">
       <div class="card-title">Jobs</div>
-      <canvas id="chart-jobs" height="100"></canvas>
+      <div style="position:relative;height:220px"><canvas id="chart-jobs"></canvas></div>
     </div>
     <div class="chart-card">
       <div class="card-title">Earnings (USD)</div>
-      <canvas id="chart-earnings" height="100"></canvas>
+      <div style="position:relative;height:220px"><canvas id="chart-earnings"></canvas></div>
     </div>
   </div>
 </div>
@@ -338,6 +391,7 @@ const dashboardHTML = `<!DOCTYPE html>
 <div id="updated"></div>
 
 <script>
+function escapeHtml(s) { var d = document.createElement('div'); d.textContent = s; return d.innerHTML; }
 function fmt2(n) { return '$' + n.toFixed(2); }
 function fmtGB(mb) { return (mb/1024).toFixed(1) + ' GB'; }
 function fmtMB(mb) { return mb > 1024 ? fmtGB(mb) : mb + ' MB'; }
@@ -412,6 +466,45 @@ function update(d) {
   diskBar.style.width = dk.free_pct + '%';
   diskBar.className = 'bar-fill ' + (dk.free_pct < 10 ? 'bar-red' : dk.free_pct < 30 ? 'bar-yellow' : 'bar-green');
 
+  // BTC Price
+  var bp = d.btc_price;
+  var btcCard = document.getElementById('btc-live').closest('.card');
+  function fmtUsd(v) { return v ? '$' + v.toLocaleString(undefined, {minimumFractionDigits: 0, maximumFractionDigits: 0}) : '—'; }
+  var btcActive = bp.live_usd || bp.yesterday_fix || bp.daily_avg || bp.status;
+  var btcNotice = document.getElementById('btc-inactive-notice');
+  if (!btcActive) {
+    if (!btcNotice) {
+      var n = document.createElement('div');
+      n.id = 'btc-inactive-notice';
+      n.style.cssText = 'color:#666;font-size:14px;font-style:italic;padding:8px 0;text-align:center';
+      n.textContent = 'Bitcoin payments not yet active on this gateway';
+      btcCard.querySelectorAll('.stat').forEach(function(s) { s.style.display = 'none'; });
+      btcCard.appendChild(n);
+    }
+  } else {
+    if (btcNotice) { btcNotice.remove(); btcCard.querySelectorAll('.stat').forEach(function(s) { s.style.display = ''; }); }
+    document.getElementById('btc-live').textContent = fmtUsd(bp.live_usd);
+    document.getElementById('btc-owlrun').textContent = fmtUsd(bp.yesterday_fix);
+    document.getElementById('btc-daily').textContent = fmtUsd(bp.daily_avg);
+    document.getElementById('btc-weekly').textContent = fmtUsd(bp.weekly_avg);
+    var statusEl = document.getElementById('btc-status');
+    statusEl.textContent = bp.status || '—';
+    statusEl.style.color = bp.status === 'normal' ? '#22c55e' : bp.status === 'stale' ? '#eab308' : '#a0a0b8';
+  }
+
+  // Broadcasts
+  var bcEl = document.getElementById('broadcasts');
+  if (d.broadcasts && d.broadcasts.length > 0) {
+    var sorted = d.broadcasts.slice().sort(function(a, b) { return b.timestamp.localeCompare(a.timestamp); });
+    bcEl.innerHTML = sorted.map(function(b) {
+      var t = new Date(b.timestamp);
+      var ts = isNaN(t) ? b.timestamp : t.toLocaleString();
+      return '<div class="broadcast-item"><span class="broadcast-msg">' + escapeHtml(b.message) + '</span><span class="broadcast-time">' + ts + '</span></div>';
+    }).join('');
+  } else {
+    bcEl.innerHTML = '<div class="broadcast-empty">Broadcast notifications from the gateway will appear here.</div>';
+  }
+
   document.getElementById('updated').textContent = 'updated ' + new Date().toLocaleTimeString();
 }
 
@@ -440,24 +533,24 @@ sc.onerror = function() { /* graceful degradation — charts stay hidden */ };
 document.head.appendChild(sc);
 
 var chartOpts = {
-  responsive: true, maintainAspectRatio: true, aspectRatio: 2,
+  responsive: true, maintainAspectRatio: false,
   animation: false, resizeDelay: 0,
   plugins: { legend: { display: false } },
   scales: {
-    x: { ticks: { color: '#666', font: { size: 10 }, maxRotation: 45 }, grid: { color: '#2a2a38' } },
-    y: { type: 'logarithmic', beginAtZero: true, ticks: { color: '#666', font: { size: 10 } }, grid: { color: '#2a2a38' } }
+    x: { ticks: { color: '#a0a0b8', font: { size: 12 }, maxRotation: 45 }, grid: { color: '#2a2a38' } },
+    y: { beginAtZero: true, ticks: { color: '#a0a0b8', font: { size: 12 } }, grid: { color: '#2a2a38' } }
   }
 };
 
 function initCharts() {
   jobsChart = new Chart(document.getElementById('chart-jobs').getContext('2d'), {
     type: 'bar',
-    data: { labels: [], datasets: [{ data: [], backgroundColor: '#eab308', borderRadius: 3 }] },
+    data: { labels: [], datasets: [{ data: [], backgroundColor: '#eab308cc', borderColor: '#eab308', borderWidth: 1, borderRadius: 3 }] },
     options: chartOpts
   });
   earningsChart = new Chart(document.getElementById('chart-earnings').getContext('2d'), {
     type: 'bar',
-    data: { labels: [], datasets: [{ data: [], backgroundColor: '#22c55e', borderRadius: 3 }] },
+    data: { labels: [], datasets: [{ data: [], backgroundColor: '#22c55ecc', borderColor: '#22c55e', borderWidth: 1, borderRadius: 3 }] },
     options: Object.assign({}, chartOpts, {
       scales: Object.assign({}, chartOpts.scales, {
         y: Object.assign({}, chartOpts.scales.y, { ticks: Object.assign({}, chartOpts.scales.y.ticks, {
