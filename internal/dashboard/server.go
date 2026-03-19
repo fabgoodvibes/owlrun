@@ -350,11 +350,15 @@ const dashboardHTML = `<!DOCTYPE html>
   body { background: #0f0f13; color: #e8e8f0; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; font-size: 17px; padding: 28px 36px; }
   h1 { font-size: 26px; font-weight: 600; margin-bottom: 22px; color: #fff; letter-spacing: -0.3px; }
   h1 span { opacity: 0.6; font-weight: 400; font-size: 16px; margin-left: 8px; }
-  .grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(320px, 1fr)); gap: 18px; }
-  .card { background: #1a1a24; border: 1px solid #2a2a38; border-radius: 12px; padding: 24px; }
+  .grid { display: grid; grid-template-columns: 1fr 1fr 1fr 1fr; grid-template-rows: auto auto; gap: 14px; }
+  .card { background: #1a1a24; border: 1px solid #2a2a38; border-radius: 12px; padding: 20px; }
   .card-title { font-size: 14px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.8px; color: #aaaac0; margin-bottom: 16px; }
+  .card-wallet { grid-row: 1 / 3; }
   .card-wide { grid-column: 1 / -1; }
-  .stat { display: flex; justify-content: space-between; align-items: center; margin-bottom: 14px; min-height: 30px; }
+  .card-notify { margin-bottom: 14px; }
+  @media (max-width: 900px) { .grid { grid-template-columns: 1fr 1fr; } .card-wallet { grid-row: auto; } }
+  @media (max-width: 550px) { .grid { grid-template-columns: 1fr; } .card-wallet { grid-row: auto; } }
+  .stat { display: flex; justify-content: space-between; align-items: center; margin-bottom: 10px; min-height: 26px; }
   .stat:last-child { margin-bottom: 0; }
   .stat-label { color: #d0d0e0; font-size: 16px; }
   .stat-value { font-weight: 500; color: #ededf5; font-variant-numeric: tabular-nums; font-size: 16px; }
@@ -404,34 +408,18 @@ const dashboardHTML = `<!DOCTYPE html>
   <div class="warn-title">Wallet not configured</div>
   <div class="warn-body" id="wallet-warn-body"></div>
 </div>
+<!-- ═══ Notifications (full width, above grid) ═══ -->
+<div class="card card-notify" id="notify-card">
+  <div class="card-title">Notifications</div>
+  <div id="broadcasts">
+    <div class="broadcast-empty">Gateway notifications will appear here.</div>
+  </div>
+</div>
+
 <div class="grid">
 
-  <!-- ═══ Hero row: Status + Earnings ═══ -->
-  <div class="card">
-    <div class="card-title">Status</div>
-    <div id="state-badge" class="state-badge">—</div>
-    <div class="node-id" id="node-id"></div>
-    <div style="margin-top:14px;border-top:1px solid #2a2a38;padding-top:14px">
-      <div class="stat">
-        <span class="stat-label">Model</span>
-        <span class="stat-value" id="model" style="max-width:160px;text-align:right">—</span>
-      </div>
-    </div>
-  </div>
-
-  <div class="card">
-    <div class="card-title">Earnings</div>
-    <div class="earnings-big" id="today">$0.00</div>
-    <div class="earnings-sub">today</div>
-    <div style="margin-top:12px" class="stat">
-      <span class="stat-label">All time</span>
-      <span class="stat-value" id="total">$0.00</span>
-    </div>
-  </div>
-
-  <!-- ═══ Financial row: Sats Wallet + BTC Price ═══ -->
-  <!-- ═══ Lightning Wallet Setup ═══ -->
-  <div class="card" id="wallet-card">
+  <!-- ═══ Wallet (col 1, spans 2 rows) ═══ -->
+  <div class="card card-wallet" id="wallet-card">
     <div class="card-title">Wallet</div>
     <div id="wallet-setup" style="display:none">
       <div style="text-align:center;padding:8px 0 16px">
@@ -556,6 +544,36 @@ const dashboardHTML = `<!DOCTYPE html>
     </div>
   </div>
 
+  <!-- ═══ Row 1 right: Status, Earnings, Notifications ═══ -->
+  <div class="card">
+    <div class="card-title">Status</div>
+    <div id="state-badge" class="state-badge">—</div>
+    <div class="node-id" id="node-id"></div>
+    <div style="margin-top:10px;border-top:1px solid #2a2a38;padding-top:10px">
+      <div class="stat">
+        <span class="stat-label">Model</span>
+        <span class="stat-value" id="model" style="max-width:140px;text-align:right">—</span>
+      </div>
+    </div>
+    <div style="margin-top:8px;padding-top:8px;border-top:1px solid #2a2a38;display:flex;flex-wrap:wrap;gap:3px 0">
+      <span class="legend-row"><span class="dot dot-green"></span>Earning</span>
+      <span class="legend-row"><span class="dot dot-yellow"></span>Ready</span>
+      <span class="legend-row"><span class="dot dot-blue"></span>No wallet</span>
+      <span class="legend-row"><span class="dot dot-red"></span>Error</span>
+      <span class="legend-row"><span class="dot dot-grey"></span>Paused</span>
+    </div>
+  </div>
+
+  <div class="card">
+    <div class="card-title">Earnings</div>
+    <div class="earnings-big" id="today">$0.00</div>
+    <div class="earnings-sub">today</div>
+    <div style="margin-top:10px" class="stat">
+      <span class="stat-label">All time</span>
+      <span class="stat-value" id="total">$0.00</span>
+    </div>
+  </div>
+
   <div class="card">
     <div class="card-title">Bitcoin Price</div>
     <div class="stat">
@@ -580,7 +598,7 @@ const dashboardHTML = `<!DOCTYPE html>
     </div>
   </div>
 
-  <!-- ═══ Infrastructure row: Gateway + GPU ═══ -->
+  <!-- ═══ Row 2 right: Gateway, GPU, Disk ═══ -->
   <div class="card">
     <div class="card-title">Gateway</div>
     <div class="stat">
@@ -625,7 +643,6 @@ const dashboardHTML = `<!DOCTYPE html>
     </div>
   </div>
 
-  <!-- ═══ Disk ═══ -->
   <div class="card">
     <div class="card-title">Disk</div>
     <div class="stat">
@@ -641,28 +658,13 @@ const dashboardHTML = `<!DOCTYPE html>
     </div>
     <div class="stat">
       <span class="stat-label">Path</span>
-      <span class="stat-value" style="font-size:14px;color:#aaaabb;max-width:200px;text-align:right;word-break:break-all" id="disk-path">—</span>
+      <span class="stat-value" style="font-size:14px;color:#aaaabb;max-width:180px;text-align:right;word-break:break-all" id="disk-path">—</span>
     </div>
   </div>
 
-  <!-- ═══ Notifications (full width) ═══ -->
-  <div class="card card-wide">
-    <div class="card-title">Notifications</div>
-    <div id="broadcasts">
-      <div class="broadcast-empty">Broadcast notifications from the gateway will appear here.</div>
-    </div>
-  </div>
+</div>
 
-  <!-- ═══ Legend (compact row) ═══ -->
-  <div class="card card-wide" style="padding:14px 22px;">
-    <div style="display:flex;flex-wrap:wrap;gap:4px 0">
-      <span class="legend-row"><span class="dot dot-green"></span>Earning</span>
-      <span class="legend-row"><span class="dot dot-yellow"></span>Getting ready</span>
-      <span class="legend-row"><span class="dot dot-blue"></span>Wallet not set</span>
-      <span class="legend-row"><span class="dot dot-red"></span>Error</span>
-      <span class="legend-row"><span class="dot dot-grey"></span>Paused</span>
-    </div>
-  </div>
+
 
 </div>
 

@@ -602,7 +602,7 @@ func (a *Agent) statusSnapshot() dashboard.Status {
 	s.Network = buildinfo.Network
 	s.Wallet.Address = a.cfg.Account.Wallet
 	if config.NeedsWallet(&a.cfg) {
-		s.Wallet.Warning = "Set your Lightning address in the <a href=\"http://localhost:19131\" style=\"color:#f7931a\">dashboard</a> to start earning Bitcoin."
+		s.Wallet.Warning = "Set your Lightning address in the Wallet section to start earning Bitcoin."
 	}
 	switch state {
 	case StateEarning:
