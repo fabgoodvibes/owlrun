@@ -393,10 +393,6 @@ const dashboardHTML = `<!DOCTYPE html>
       <span class="stat-label">Queue depth</span>
       <span class="stat-value" id="gw-queue">—</span>
     </div>
-    <div class="stat">
-      <span class="stat-label">Next payout</span>
-      <span class="stat-value" id="gw-payout">—</span>
-    </div>
   </div>
 
   <div class="card">
@@ -550,8 +546,6 @@ function update(d) {
   document.getElementById('gw-jobs').textContent   = gw.jobs_today;
   document.getElementById('gw-tokens').textContent = gw.tokens_today.toLocaleString();
   document.getElementById('gw-queue').textContent  = gw.queue_depth_global;
-  document.getElementById('gw-payout').textContent = gw.next_payout_epoch
-    ? new Date(gw.next_payout_epoch).toLocaleDateString() : '—';
 
   const dk = d.disk;
   document.getElementById('disk-free').textContent  = dk.free_gb.toFixed(1) + ' GB (' + dk.free_pct.toFixed(0) + '%)';
