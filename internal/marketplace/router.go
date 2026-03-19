@@ -22,6 +22,7 @@ type Router struct {
 	wallet           string
 	referralCode     string
 	lightningAddress string
+	redeemThreshold  int
 	region           string
 	version          string
 	gpuInfo          gpu.Info
@@ -32,7 +33,7 @@ type Router struct {
 // onComplete is called (from a goroutine) when a job_complete message arrives
 // from the gateway — use it to call earnings.Tracker.Record().
 func New(
-	gatewayBase, proxyBase, apiKey, nodeID, wallet, referralCode, lightningAddress, region, version string,
+	gatewayBase, proxyBase, apiKey, nodeID, wallet, referralCode, lightningAddress string, redeemThreshold int, region, version string,
 	gpuInfo gpu.Info,
 	getStats StatsFunc,
 	onComplete JobCompleteFunc,
@@ -61,6 +62,7 @@ func New(
 		wallet:           wallet,
 		referralCode:     referralCode,
 		lightningAddress: lightningAddress,
+		redeemThreshold:  redeemThreshold,
 		region:           region,
 		version:      version,
 		gpuInfo:      gpuInfo,
@@ -69,7 +71,7 @@ func New(
 
 	// Pre-build the registration payload (no model loaded yet; models updated
 	// via SetModel before Connect is called).
-	payload, err := BuildRegistration(nodeID, apiKey, wallet, referralCode, lightningAddress, region, version, gpuInfo, nil)
+	payload, err := BuildRegistration(nodeID, apiKey, wallet, referralCode, lightningAddress, redeemThreshold, region, version, gpuInfo, nil)
 	if err != nil {
 		log.Printf("owlrun: gateway: build registration payload: %v", err)
 	} else {
@@ -84,7 +86,7 @@ func New(
 func (r *Router) SetModel(model string) {
 	r.conn.SetModel(model)
 
-	payload, err := BuildRegistration(r.nodeID, r.apiKey, r.wallet, r.referralCode, r.lightningAddress, r.region, r.version, r.gpuInfo, []string{model})
+	payload, err := BuildRegistration(r.nodeID, r.apiKey, r.wallet, r.referralCode, r.lightningAddress, r.redeemThreshold, r.region, r.version, r.gpuInfo, []string{model})
 	if err != nil {
 		log.Printf("owlrun: gateway: rebuild registration payload: %v", err)
 		return
@@ -105,13 +107,33 @@ func (r *Router) SetLightningAddress(addr string) {
 	if model != "" {
 		models = []string{model}
 	}
-	payload, err := BuildRegistration(r.nodeID, r.apiKey, r.wallet, r.referralCode, r.lightningAddress, r.region, r.version, r.gpuInfo, models)
+	payload, err := BuildRegistration(r.nodeID, r.apiKey, r.wallet, r.referralCode, r.lightningAddress, r.redeemThreshold, r.region, r.version, r.gpuInfo, models)
 	if err != nil {
 		log.Printf("owlrun: gateway: rebuild registration (lightning address): %v", err)
 		return
 	}
 	r.conn.SetRegistration(payload)
 	log.Printf("owlrun: gateway: lightning address updated, will re-register on next reconnect")
+}
+
+// SetRedeemThreshold updates the payout threshold (sats) and re-registers.
+func (r *Router) SetRedeemThreshold(threshold int) {
+	r.redeemThreshold = threshold
+	r.conn.mu.RLock()
+	model := r.conn.model
+	r.conn.mu.RUnlock()
+
+	var models []string
+	if model != "" {
+		models = []string{model}
+	}
+	payload, err := BuildRegistration(r.nodeID, r.apiKey, r.wallet, r.referralCode, r.lightningAddress, r.redeemThreshold, r.region, r.version, r.gpuInfo, models)
+	if err != nil {
+		log.Printf("owlrun: gateway: rebuild registration (redeem threshold): %v", err)
+		return
+	}
+	r.conn.SetRegistration(payload)
+	log.Printf("owlrun: gateway: redeem threshold updated to %d sats, will re-register on next reconnect", threshold)
 }
 
 // Connect starts the gateway WS lifecycle. Non-blocking.

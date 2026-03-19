@@ -4,6 +4,7 @@
 package config
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -35,6 +36,7 @@ type AccountConfig struct {
 	Wallet           string // Solana pubkey (base58) or EVM address (0x...)
 	ReferralCode     string // affiliate referral code (owlr_ref_<code>), optional
 	LightningAddress string // Lightning address for BTC payouts (e.g. user@walletofsatoshi.com), optional
+	RedeemThreshold  int    // sats threshold for auto-payout via Lightning (default 500)
 }
 
 type MarketplaceConfig struct {
@@ -81,7 +83,8 @@ func defaults() Config {
 
 	return Config{
 		Account: AccountConfig{
-			Wallet: wallet,
+			Wallet:          wallet,
+			RedeemThreshold: 500,
 		},
 		Marketplace: MarketplaceConfig{
 			Gateway:       gateway,
@@ -151,6 +154,20 @@ func SaveLightningAddress(addr string) error {
 	return f.SaveTo(path)
 }
 
+// SaveRedeemThreshold persists a redeem threshold (sats) to the config file.
+func SaveRedeemThreshold(threshold int) error {
+	path := Path()
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		return err
+	}
+	f, err := ini.LooseLoad(path)
+	if err != nil {
+		f = ini.Empty()
+	}
+	f.Section("account").Key("redeem_threshold").SetValue(fmt.Sprintf("%d", threshold))
+	return f.SaveTo(path)
+}
+
 // Path returns the default config file location: ~/.owlrun/owlrun.conf
 func Path() string {
 	home, err := os.UserHomeDir()
@@ -184,6 +201,7 @@ func Load() (Config, error) {
 		cfg.Account.Wallet = sec.Key("wallet").String()
 		cfg.Account.ReferralCode = sec.Key("referral_code").String()
 		cfg.Account.LightningAddress = sec.Key("lightning_address").String()
+		cfg.Account.RedeemThreshold = sec.Key("redeem_threshold").MustInt(500)
 	}
 
 	if sec, err := f.GetSection("marketplace"); err == nil {

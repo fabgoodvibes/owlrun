@@ -63,6 +63,7 @@ type Status struct {
 	} `json:"disk"`
 
 	LightningAddress string         `json:"lightning_address"`
+	RedeemThreshold  int            `json:"redeem_threshold"`
 	BtcPrice         BtcPriceInfo   `json:"btc_price"`
 	Broadcasts       []BroadcastMsg `json:"broadcasts"`
 	SatsWallet       SatsWalletInfo `json:"sats_wallet"`
@@ -113,13 +114,17 @@ type ClaimFunc func(amountSats int64) (token string, err error)
 // SetLightningAddressFunc saves a Lightning address and re-registers with gateway.
 type SetLightningAddressFunc func(addr string) error
 
+// SetRedeemThresholdFunc saves a redeem threshold and re-registers with gateway.
+type SetRedeemThresholdFunc func(threshold int) error
+
 // Server is the embedded web dashboard.
 type Server struct {
 	port     int
 	provider atomic.Pointer[StatusProvider]
 	tracker  atomic.Pointer[earnings.Tracker]
 	claimer  atomic.Pointer[ClaimFunc]
-	setLnAddr atomic.Pointer[SetLightningAddressFunc]
+	setLnAddr      atomic.Pointer[SetLightningAddressFunc]
+	setRedeemThr   atomic.Pointer[SetRedeemThresholdFunc]
 }
 
 // New creates a dashboard Server on the given port.
@@ -151,6 +156,11 @@ func (s *Server) SetLightningAddressSetter(fn SetLightningAddressFunc) {
 	s.setLnAddr.Store(&fn)
 }
 
+// SetRedeemThresholdSetter wires the redeem threshold save function.
+func (s *Server) SetRedeemThresholdSetter(fn SetRedeemThresholdFunc) {
+	s.setRedeemThr.Store(&fn)
+}
+
 // Start launches the HTTP server in the background.
 // The listener is bound before returning so the port is ready for connections.
 func (s *Server) Start() error {
@@ -160,6 +170,7 @@ func (s *Server) Start() error {
 	mux.HandleFunc("/api/history", s.handleHistory)
 	mux.HandleFunc("/api/claim-ecash", s.handleClaimEcash)
 	mux.HandleFunc("/api/set-lightning-address", s.handleSetLightningAddress)
+	mux.HandleFunc("/api/set-redeem-threshold", s.handleSetRedeemThreshold)
 	ln, err := net.Listen("tcp", fmt.Sprintf("127.0.0.1:%d", s.port))
 	if err != nil {
 		return err
@@ -288,6 +299,41 @@ func (s *Server) handleSetLightningAddress(w http.ResponseWriter, r *http.Reques
 	json.NewEncoder(w).Encode(map[string]string{"status": "ok", "address": req.Address})
 }
 
+func (s *Server) handleSetRedeemThreshold(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Content-Type", "application/json")
+	w.Header().Set("Access-Control-Allow-Origin", "*")
+
+	if r.Method != http.MethodPost {
+		w.WriteHeader(http.StatusMethodNotAllowed)
+		json.NewEncoder(w).Encode(map[string]string{"error": "POST required"})
+		return
+	}
+
+	fn := s.setRedeemThr.Load()
+	if fn == nil {
+		w.WriteHeader(http.StatusServiceUnavailable)
+		json.NewEncoder(w).Encode(map[string]string{"error": "not ready"})
+		return
+	}
+
+	var req struct {
+		Threshold int `json:"threshold"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil || req.Threshold < 50 || req.Threshold > 1000 {
+		w.WriteHeader(http.StatusBadRequest)
+		json.NewEncoder(w).Encode(map[string]string{"error": "threshold must be between 50 and 1000"})
+		return
+	}
+
+	if err := (*fn)(req.Threshold); err != nil {
+		w.WriteHeader(http.StatusInternalServerError)
+		json.NewEncoder(w).Encode(map[string]string{"error": err.Error()})
+		return
+	}
+
+	json.NewEncoder(w).Encode(map[string]any{"status": "ok", "threshold": req.Threshold})
+}
+
 func (s *Server) handleIndex(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	fmt.Fprint(w, dashboardHTML)
@@ -411,17 +457,6 @@ const dashboardHTML = `<!DOCTYPE html>
         <span class="stat-label">Lightning address</span>
         <span class="stat-value" id="ln-address-display" style="color:#f7931a;font-family:monospace;font-size:14px;max-width:200px;text-align:right;word-break:break-all"></span>
       </div>
-      <div class="stat">
-        <span class="stat-label">Pending earnings</span>
-        <span class="stat-value" id="sats-gateway" style="color:#f7931a;font-weight:bold">0 sats</span>
-      </div>
-      <div class="stat">
-        <span class="stat-label">USD approx</span>
-        <span class="stat-value" id="sats-usd">$0.00</span>
-      </div>
-      <div style="font-size:13px;color:#aaaabb;margin-top:10px;padding-top:10px;border-top:1px solid #2a2a38">
-        Earnings auto-sent to your Lightning wallet. No action needed.
-      </div>
       <div style="margin-top:10px">
         <button onclick="toggleEditLnAddress()" style="padding:6px 14px;background:#2a2a38;color:#d0d0e0;border:1px solid #3a3a48;border-radius:6px;cursor:pointer;font-size:13px">Change address</button>
       </div>
@@ -432,6 +467,91 @@ const dashboardHTML = `<!DOCTYPE html>
           <button onclick="toggleEditLnAddress()" style="padding:8px 12px;background:#2a2a38;color:#d0d0e0;border:1px solid #3a3a48;border-radius:6px;cursor:pointer;font-size:13px">Cancel</button>
         </div>
         <div id="ln-edit-error" style="display:none;color:#ef4444;font-size:13px;margin-top:6px"></div>
+      </div>
+
+      <!-- Payout threshold slider -->
+      <div style="margin-top:16px;padding-top:14px;border-top:1px solid #2a2a38">
+        <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:6px">
+          <span style="font-size:14px;color:#d0d0e0">Payout threshold</span>
+          <span id="threshold-value" style="font-size:14px;color:#f7931a;font-weight:600">500 sats</span>
+        </div>
+        <input id="threshold-slider" type="range" min="100" max="1000" step="50" value="500" oninput="updateThresholdDisplay(this.value)" onchange="saveRedeemThreshold(this.value)" style="width:100%;accent-color:#f7931a;cursor:pointer" />
+        <div style="display:flex;justify-content:space-between;font-size:12px;color:#888;margin-top:2px">
+          <span>100</span><span>500</span><span>1000</span>
+        </div>
+        <div style="font-size:13px;color:#aaaabb;margin-top:6px" id="threshold-hint">Lower = faster payouts, higher fees. Higher = slower payouts, lower fees.</div>
+        <div style="font-size:13px;margin-top:4px">
+          <span style="color:#aaaabb">Est. Lightning fee: </span>
+          <span id="fee-estimate" style="color:#f7931a;font-weight:600">~1%</span>
+        </div>
+        <div style="margin-top:8px">
+          <label style="display:flex;align-items:center;gap:8px;cursor:pointer;font-size:13px;color:#888">
+            <input type="checkbox" id="unlock-50" onchange="toggleLowThreshold(this.checked)" style="accent-color:#f7931a" />
+            Unlock 50 sat minimum
+          </label>
+          <div id="low-threshold-warn" style="display:none;font-size:12px;color:#eab308;margin-top:4px;margin-left:24px">&#9888; ~10% eaten by Lightning fees at this level</div>
+        </div>
+      </div>
+
+      <!-- Earnings stats -->
+      <div style="margin-top:16px;padding-top:14px;border-top:1px solid #2a2a38">
+        <div class="stat">
+          <span class="stat-label">Pending earnings</span>
+          <span class="stat-value" id="sats-gateway" style="color:#f7931a;font-weight:bold">0 sats</span>
+        </div>
+        <div class="stat">
+          <span class="stat-label">USD approx</span>
+          <span class="stat-value" id="sats-usd">$0.00</span>
+        </div>
+        <div class="stat">
+          <span class="stat-label">Today's earnings</span>
+          <span class="stat-value" id="wallet-today-sats" style="color:#22c55e">0 sats</span>
+        </div>
+        <div class="stat">
+          <span class="stat-label">Total withdrawn</span>
+          <span class="stat-value" id="wallet-withdrawn">0 sats</span>
+        </div>
+        <div class="stat">
+          <span class="stat-label">Next payout est.</span>
+          <span class="stat-value" id="wallet-next-payout" style="font-size:14px;color:#aaaabb">—</span>
+        </div>
+      </div>
+
+      <!-- Fee disclaimer -->
+      <div style="margin-top:12px;font-size:12px;color:#888;line-height:1.5;padding:10px 12px;background:#0f0f13;border-radius:6px">
+        Lightning fees go to the Bitcoin network, not Owlrun. Our fee is always under 10%.
+      </div>
+
+      <!-- Advanced: ecash -->
+      <div style="margin-top:14px">
+        <details>
+          <summary style="cursor:pointer;font-size:14px;color:#aaaabb;user-select:none">&#9656; Advanced: Withdraw as ecash (QR)</summary>
+          <div style="margin-top:12px;padding:12px;background:#0f0f13;border-radius:8px">
+            <div class="stat">
+              <span class="stat-label">Local ecash</span>
+              <span class="stat-value" id="ecash-local-sats" style="color:#f7931a">0 sats</span>
+            </div>
+            <div class="stat">
+              <span class="stat-label">Proofs</span>
+              <span class="stat-value" id="ecash-proof-count">0</span>
+            </div>
+            <div style="margin-top:8px">
+              <button id="btn-claim" onclick="claimEcash()" style="padding:8px 16px;background:#f7931a;color:#fff;border:none;border-radius:6px;cursor:pointer;font-weight:600;font-size:13px">Claim All</button>
+            </div>
+            <div id="claim-result" style="display:none;margin-top:10px">
+              <textarea id="claim-token" readonly style="width:100%;height:60px;background:#1a1a24;color:#e8e8f0;border:1px solid #2a2a38;border-radius:6px;padding:8px;font-size:12px;font-family:monospace;resize:vertical;box-sizing:border-box"></textarea>
+              <div style="display:flex;justify-content:space-between;align-items:center;margin-top:4px">
+                <span id="claim-amount" style="font-size:13px;color:#aaaabb"></span>
+                <button onclick="copyToken()" style="padding:4px 10px;background:#2a2a38;color:#d0d0e0;border:1px solid #3a3a48;border-radius:4px;cursor:pointer;font-size:12px">Copy</button>
+              </div>
+            </div>
+            <div id="ecash-token-history" style="margin-top:10px"></div>
+          </div>
+        </details>
+      </div>
+
+      <div style="font-size:13px;color:#aaaabb;margin-top:10px;padding-top:10px;border-top:1px solid #2a2a38">
+        Earnings auto-sent to your Lightning wallet. No action needed.
       </div>
     </div>
   </div>
@@ -651,6 +771,35 @@ function update(d) {
     document.getElementById('ln-address-display').textContent = lnAddr;
     document.getElementById('sats-gateway').textContent = fmtSats(sw.gateway_sats);
     document.getElementById('sats-usd').textContent = sw.usd_approx ? '$' + sw.usd_approx.toFixed(2) : '$0.00';
+    // Threshold slider
+    var thr = d.redeem_threshold || 500;
+    var slider = document.getElementById('threshold-slider');
+    if (document.activeElement !== slider) {
+      slider.value = thr;
+      updateThresholdDisplay(thr);
+    }
+    if (thr < 100) { document.getElementById('unlock-50').checked = true; slider.min = '50'; }
+    // Earnings stats
+    document.getElementById('wallet-today-sats').textContent = fmtSats(sw.gateway_sats);
+    document.getElementById('wallet-withdrawn').textContent = fmtSats(sw.local_sats);
+    if (sw.gateway_sats > 0 && thr > 0) {
+      var pct = Math.min(100, Math.round(sw.gateway_sats / thr * 100));
+      document.getElementById('wallet-next-payout').textContent = pct + '% to threshold (' + thr + ' sats)';
+    } else {
+      document.getElementById('wallet-next-payout').textContent = '—';
+    }
+    // Ecash advanced section
+    document.getElementById('ecash-local-sats').textContent = fmtSats(sw.local_sats);
+    document.getElementById('ecash-proof-count').textContent = sw.proof_count || 0;
+    // Token history
+    var histEl = document.getElementById('ecash-token-history');
+    if (sw.token_history && sw.token_history.length > 0) {
+      histEl.innerHTML = '<div style="font-size:13px;color:#aaaabb;margin-bottom:6px">Recent tokens:</div>' +
+        sw.token_history.slice(0, 5).map(function(t) {
+          return '<div style="font-size:12px;color:#888;margin-bottom:4px;word-break:break-all">' +
+            fmtSats(t.sats) + ' — ' + new Date(t.claimed_at).toLocaleString() + '</div>';
+        }).join('');
+    }
   } else {
     document.getElementById('wallet-setup').style.display = '';
     document.getElementById('wallet-active').style.display = 'none';
@@ -745,6 +894,39 @@ function toggleEditLnAddress() {
   } else {
     sec.style.display = 'none';
   }
+}
+
+function estimateFee(sats) {
+  if (sats <= 50) return '~10%';
+  if (sats <= 100) return '~5%';
+  if (sats <= 200) return '~2.5%';
+  if (sats <= 500) return '~1%';
+  return '~0.5%';
+}
+
+function updateThresholdDisplay(val) {
+  val = parseInt(val);
+  document.getElementById('threshold-value').textContent = val + ' sats';
+  document.getElementById('fee-estimate').textContent = estimateFee(val);
+  var warn = document.getElementById('low-threshold-warn');
+  if (val <= 50) { warn.style.display = ''; } else { warn.style.display = 'none'; }
+}
+
+function toggleLowThreshold(checked) {
+  var slider = document.getElementById('threshold-slider');
+  if (checked) {
+    slider.min = '50';
+  } else {
+    slider.min = '100';
+    if (parseInt(slider.value) < 100) { slider.value = '100'; updateThresholdDisplay(100); saveRedeemThreshold(100); }
+  }
+  document.getElementById('low-threshold-warn').style.display = checked ? '' : 'none';
+}
+
+async function saveRedeemThreshold(val) {
+  try {
+    await fetch('/api/set-redeem-threshold', {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({threshold:parseInt(val)})});
+  } catch(e) {}
 }
 
 async function poll() {

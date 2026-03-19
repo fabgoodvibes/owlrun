@@ -110,6 +110,7 @@ func Run(cfg config.Config, dash *dashboard.Server) {
 		cfg.Account.Wallet,
 		cfg.Account.ReferralCode,
 		cfg.Account.LightningAddress,
+		cfg.Account.RedeemThreshold,
 		cfg.Marketplace.Region,
 		buildinfo.Version,
 		info,
@@ -205,6 +206,16 @@ func (a *Agent) onReady() {
 			a.cfg.Account.LightningAddress = addr
 			a.mu.Unlock()
 			a.gateway.SetLightningAddress(addr)
+			return nil
+		})
+		a.dash.SetRedeemThresholdSetter(func(threshold int) error {
+			if err := config.SaveRedeemThreshold(threshold); err != nil {
+				return err
+			}
+			a.mu.Lock()
+			a.cfg.Account.RedeemThreshold = threshold
+			a.mu.Unlock()
+			a.gateway.SetRedeemThreshold(threshold)
 			return nil
 		})
 	}
@@ -636,6 +647,7 @@ func (a *Agent) statusSnapshot() dashboard.Status {
 	s.Gateway.EarnedTodayUSD = gwStats.EarnedTodayUSD
 	s.Gateway.QueueDepthGlobal = gwStats.QueueDepthGlobal
 	s.LightningAddress = a.cfg.Account.LightningAddress
+	s.RedeemThreshold = a.cfg.Account.RedeemThreshold
 
 	// BTC price from gateway
 	s.BtcPrice = dashboard.BtcPriceInfo{
