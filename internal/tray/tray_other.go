@@ -284,6 +284,8 @@ func (d *daemon) statusSnapshot() dashboard.Status {
 	s.Wallet.Address = d.cfg.Account.Wallet
 	if config.NeedsWallet(&d.cfg) {
 		s.Wallet.Warning = "Set your Lightning address in the Wallet section to start earning Bitcoin."
+	} else if d.cfg.Account.LightningAddress != "" {
+		s.Wallet.Configured = "Wallet configured at " + d.cfg.Account.LightningAddress
 	}
 	switch st {
 	case stateEarning:

@@ -24,8 +24,9 @@ type Status struct {
 	State   string `json:"state"`   // "earning" | "idle" | "paused"
 
 	Wallet struct {
-		Address string `json:"address"`
-		Warning string `json:"warning,omitempty"` // non-empty = user needs to set wallet
+		Address    string `json:"address"`
+		Warning    string `json:"warning,omitempty"`    // non-empty = user needs to set wallet
+		Configured string `json:"configured,omitempty"` // non-empty = wallet configured, show green banner
 	} `json:"wallet"`
 
 	GPU struct {
@@ -392,6 +393,9 @@ const dashboardHTML = `<!DOCTYPE html>
   .wallet-warn { background: #2d1f00; border: 1px solid #b45309; border-radius: 8px; padding: 16px 20px; margin-bottom: 18px; display: none; }
   .wallet-warn .warn-title { color: #f59e0b; font-weight: 600; font-size: 15px; margin-bottom: 4px; }
   .wallet-warn .warn-body { color: #e0b060; font-size: 14px; line-height: 1.5; }
+  .wallet-warn.configured { background: #0d2818; border-color: #16a34a; }
+  .wallet-warn.configured .warn-title { color: #4ade80; }
+  .wallet-warn.configured .warn-body { color: #86efac; }
   .wallet-warn code { background: #1a1a24; padding: 2px 6px; border-radius: 4px; font-size: 13px; color: #e2e2e8; }
   .network-badge { display: inline-block; background: #b45309; color: #fff; font-size: 11px; font-weight: 600; padding: 3px 9px; border-radius: 4px; margin-left: 8px; text-transform: uppercase; vertical-align: middle; }
   .broadcast-empty { color: #9999b0; font-size: 15px; font-style: italic; padding: 8px 0; }
@@ -697,12 +701,12 @@ function fmtMB(mb) { return mb > 1024 ? fmtGB(mb) : mb + ' MB'; }
 
 function stateDisplay(state) {
   switch(state) {
-    case 'earning': return ['dot-green',  '● Connected & earning'];
-    case 'ready':   return ['dot-yellow', '◑ Getting ready'];
-    case 'idle':    return ['dot-yellow', '◑ Idle — waiting'];
-    case 'wallet':  return ['dot-blue',   '◇ Wallet not set'];
-    case 'error':   return ['dot-red',    '✕ Error'];
-    case 'paused':  return ['dot-grey',   '○ Paused'];
+    case 'earning': return ['dot-green',  'Connected & earning'];
+    case 'ready':   return ['dot-yellow', 'Getting ready'];
+    case 'idle':    return ['dot-yellow', 'Idle — waiting'];
+    case 'wallet':  return ['dot-blue',   'Wallet not set'];
+    case 'error':   return ['dot-red',    'Error'];
+    case 'paused':  return ['dot-grey',   'Paused'];
     default:        return ['dot-grey',   state];
   }
 }
@@ -720,12 +724,20 @@ function update(d) {
   if (d.network === 'beta') { nb.textContent = 'BETA'; nb.style.display = 'inline-block'; }
   else { nb.style.display = 'none'; }
 
-  // Wallet warning
+  // Wallet warning / configured banner
   var ww = document.getElementById('wallet-warn');
+  var wwTitle = ww.querySelector('.warn-title');
   if (d.wallet && d.wallet.warning) {
+    wwTitle.textContent = 'Wallet not configured';
     document.getElementById('wallet-warn-body').innerHTML = d.wallet.warning;
+    ww.classList.remove('configured');
     ww.style.display = 'block';
-  } else { ww.style.display = 'none'; }
+  } else if (d.wallet && d.wallet.configured) {
+    wwTitle.textContent = '\u26a1 Wallet configured';
+    document.getElementById('wallet-warn-body').textContent = d.wallet.configured;
+    ww.classList.add('configured');
+    ww.style.display = 'block';
+  } else { ww.classList.remove('configured'); ww.style.display = 'none'; }
 
   const [dotClass, label] = stateDisplay(d.state);
   document.getElementById('state-badge').innerHTML =

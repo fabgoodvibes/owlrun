@@ -108,8 +108,12 @@ func defaults() Config {
 }
 
 // NeedsWallet returns true if the user hasn't set their own payout wallet.
-// This is the case when the wallet is empty or still the beta default.
+// This is the case when there's no Lightning address AND the legacy wallet
+// is empty or still the beta default.
 func NeedsWallet(cfg *Config) bool {
+	if cfg.Account.LightningAddress != "" {
+		return false
+	}
 	return cfg.Account.Wallet == "" || cfg.Account.Wallet == betaWallet
 }
 

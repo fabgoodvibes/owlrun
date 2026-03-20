@@ -603,6 +603,8 @@ func (a *Agent) statusSnapshot() dashboard.Status {
 	s.Wallet.Address = a.cfg.Account.Wallet
 	if config.NeedsWallet(&a.cfg) {
 		s.Wallet.Warning = "Set your Lightning address in the Wallet section to start earning Bitcoin."
+	} else if a.cfg.Account.LightningAddress != "" {
+		s.Wallet.Configured = "Wallet configured at " + a.cfg.Account.LightningAddress
 	}
 	switch state {
 	case StateEarning:
