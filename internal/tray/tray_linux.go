@@ -745,6 +745,14 @@ func (d *sniDaemon) statusSnapshot() dashboard.Status {
 	s.LightningAddress = d.cfg.Account.LightningAddress
 	s.RedeemThreshold = d.cfg.Account.RedeemThreshold
 
+	// Model pricing from gateway
+	if gwStats.ModelPricing != nil {
+		s.ModelPricing = &dashboard.ModelPricingInfo{
+			PerMInputUSD:  gwStats.ModelPricing.PerMInputUSD,
+			PerMOutputUSD: gwStats.ModelPricing.PerMOutputUSD,
+		}
+	}
+
 	// BTC price from gateway
 	s.BtcPrice = dashboard.BtcPriceInfo{
 		LiveUsd:    gwStats.BtcPrice.LiveUsd,

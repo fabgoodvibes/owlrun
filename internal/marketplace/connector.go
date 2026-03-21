@@ -141,6 +141,7 @@ type Connector struct {
 	model        string       // currently loaded Ollama model
 	conn         *websocket.Conn
 	gatewayStats GatewayStats
+	modelPricing *ModelPricing // fetched from /v1/models, persists across heartbeats
 	queueDepth   int
 
 	cancelFn context.CancelFunc
@@ -212,7 +213,9 @@ func (c *Connector) SetModel(model string) {
 func (c *Connector) Stats() GatewayStats {
 	c.mu.RLock()
 	defer c.mu.RUnlock()
-	return c.gatewayStats
+	s := c.gatewayStats
+	s.ModelPricing = c.modelPricing
+	return s
 }
 
 // Connect starts the registration + WS lifecycle in a background goroutine.
@@ -335,9 +338,6 @@ func (c *Connector) register(ctx context.Context) error {
 		return fmt.Errorf("register HTTP %d: %s", resp.StatusCode, b)
 	}
 	log.Printf("owlrun: gateway: registered node %s", c.nodeID)
-
-	// Best-effort fetch of model pricing after registration.
-	go c.fetchModelPricing(ctx)
 	return nil
 }
 
@@ -380,7 +380,7 @@ func (c *Connector) fetchModelPricing(ctx context.Context) {
 	for _, m := range result.Data {
 		if m.ID == model && m.Pricing != nil {
 			c.mu.Lock()
-			c.gatewayStats.ModelPricing = m.Pricing
+			c.modelPricing = m.Pricing
 			c.mu.Unlock()
 			log.Printf("owlrun: gateway: model %s pricing: $%.3f/$%.3f per M tokens (in/out)", model, m.Pricing.PerMInputUSD, m.Pricing.PerMOutputUSD)
 			return
@@ -412,6 +412,9 @@ func (c *Connector) runSession(ctx context.Context) error {
 	}()
 
 	log.Printf("owlrun: gateway: WS connected")
+
+	// Best-effort fetch of model pricing after WS connects.
+	go c.fetchModelPricing(ctx)
 
 	if c.onConnect != nil {
 		c.onConnect()
