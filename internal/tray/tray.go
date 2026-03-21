@@ -651,6 +651,14 @@ func (a *Agent) statusSnapshot() dashboard.Status {
 	s.LightningAddress = a.cfg.Account.LightningAddress
 	s.RedeemThreshold = a.cfg.Account.RedeemThreshold
 
+	// Model pricing from gateway
+	if gwStats.ModelPricing != nil {
+		s.ModelPricing = &dashboard.ModelPricingInfo{
+			PerMInputUSD:  gwStats.ModelPricing.PerMInputUSD,
+			PerMOutputUSD: gwStats.ModelPricing.PerMOutputUSD,
+		}
+	}
+
 	// BTC price from gateway
 	s.BtcPrice = dashboard.BtcPriceInfo{
 		LiveUsd:    gwStats.BtcPrice.LiveUsd,

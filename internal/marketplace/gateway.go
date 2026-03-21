@@ -13,6 +13,9 @@ import (
 // MIT-licensed: users can override in owlrun.conf, but 99% won't.
 const DefaultGatewayBase = "https://node.owlrun.me"
 
+// DefaultAPIBase is the buyer-facing API endpoint (public, no auth required for /v1/models).
+const DefaultAPIBase = "https://api.owlrun.me"
+
 // registerPayload is the JSON body sent to POST /v1/gateway/register.
 type registerPayload struct {
 	NodeID       string   `json:"node_id"`

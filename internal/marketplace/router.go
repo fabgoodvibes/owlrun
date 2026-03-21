@@ -113,7 +113,8 @@ func (r *Router) SetLightningAddress(addr string) {
 		return
 	}
 	r.conn.SetRegistration(payload)
-	log.Printf("owlrun: gateway: lightning address updated, will re-register on next reconnect")
+	log.Printf("owlrun: gateway: lightning address updated, reconnecting")
+	go r.conn.Reconnect()
 }
 
 // SetRedeemThreshold updates the payout threshold (sats) and re-registers.
@@ -133,7 +134,8 @@ func (r *Router) SetRedeemThreshold(threshold int) {
 		return
 	}
 	r.conn.SetRegistration(payload)
-	log.Printf("owlrun: gateway: redeem threshold updated to %d sats, will re-register on next reconnect", threshold)
+	log.Printf("owlrun: gateway: redeem threshold updated to %d sats, reconnecting", threshold)
+	go r.conn.Reconnect()
 }
 
 // Connect starts the gateway WS lifecycle. Non-blocking.

@@ -5,6 +5,7 @@ package marketplace
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"fmt"
 	"io"
 	"log"
@@ -32,6 +33,12 @@ type StatsFunc func() (utilPct int, vramFreeMB int, tempC int, powerW float64)
 // JobCompleteFunc is called when the gateway confirms a job has been billed.
 type JobCompleteFunc func(model string, tokens int, earnedUSD float64)
 
+// ModelPricing holds per-model pricing from the gateway's /v1/models endpoint.
+type ModelPricing struct {
+	PerMInputUSD  float64 `json:"per_m_input_usd"`
+	PerMOutputUSD float64 `json:"per_m_output_usd"`
+}
+
 // GatewayStats is the last heartbeat_ack received from the gateway.
 // Safe to read from any goroutine via Connector.GatewayStats().
 type GatewayStats struct {
@@ -44,6 +51,7 @@ type GatewayStats struct {
 	BtcPrice         BtcPrice
 	Broadcasts       []Broadcast
 	BalanceSats      int64
+	ModelPricing     *ModelPricing
 }
 
 // wsMsg is the generic WebSocket message envelope used for all control traffic.
@@ -242,6 +250,24 @@ func (c *Connector) Disconnect() {
 	log.Printf("owlrun: gateway: disconnected")
 }
 
+// Reconnect tears down the current WS session and immediately reconnects
+// with the latest registration payload. Used when config changes (e.g.
+// redeem threshold, lightning address) need to take effect without a
+// full process restart.
+func (c *Connector) Reconnect() {
+	c.mu.RLock()
+	wasRunning := c.running
+	c.mu.RUnlock()
+	if !wasRunning {
+		return
+	}
+	log.Printf("owlrun: gateway: reconnecting to apply config changes")
+	c.Disconnect()
+	// Small delay to let the old WS close cleanly on the server side.
+	time.Sleep(500 * time.Millisecond)
+	c.Connect()
+}
+
 // runLoop keeps the WS connection alive, reconnecting on failure.
 // Uses exponential backoff: 1s → 2s → 4s → … capped at 30s.
 // Resets to 1s after a successful WS session so reconnects are fast after
@@ -309,7 +335,57 @@ func (c *Connector) register(ctx context.Context) error {
 		return fmt.Errorf("register HTTP %d: %s", resp.StatusCode, b)
 	}
 	log.Printf("owlrun: gateway: registered node %s", c.nodeID)
+
+	// Best-effort fetch of model pricing after registration.
+	go c.fetchModelPricing(ctx)
 	return nil
+}
+
+// fetchModelPricing queries the gateway's public /v1/models endpoint to get
+// pricing for the currently loaded model. Non-critical — failures are logged
+// and silently ignored.
+func (c *Connector) fetchModelPricing(ctx context.Context) {
+	c.mu.RLock()
+	model := c.model
+	c.mu.RUnlock()
+	if model == "" {
+		return
+	}
+
+	url := DefaultAPIBase + "/v1/models"
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
+	if err != nil {
+		return
+	}
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		log.Printf("owlrun: gateway: fetch model pricing: %v", err)
+		return
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return
+	}
+
+	var result struct {
+		Data []struct {
+			ID      string        `json:"id"`
+			Pricing *ModelPricing `json:"pricing,omitempty"`
+		} `json:"data"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
+		return
+	}
+
+	for _, m := range result.Data {
+		if m.ID == model && m.Pricing != nil {
+			c.mu.Lock()
+			c.gatewayStats.ModelPricing = m.Pricing
+			c.mu.Unlock()
+			log.Printf("owlrun: gateway: model %s pricing: $%.3f/$%.3f per M tokens (in/out)", model, m.Pricing.PerMInputUSD, m.Pricing.PerMOutputUSD)
+			return
+		}
+	}
 }
 
 // runSession opens the WS and runs until it closes or ctx is cancelled.

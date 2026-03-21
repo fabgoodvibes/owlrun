@@ -40,7 +40,8 @@ type Status struct {
 		VRAMExact   bool    `json:"vram_exact"`
 	} `json:"gpu"`
 
-	Model string `json:"model"`
+	Model        string              `json:"model"`
+	ModelPricing *ModelPricingInfo    `json:"model_pricing,omitempty"`
 
 	Earnings struct {
 		TodayUSD float64 `json:"today_usd"`
@@ -68,6 +69,12 @@ type Status struct {
 	BtcPrice         BtcPriceInfo   `json:"btc_price"`
 	Broadcasts       []BroadcastMsg `json:"broadcasts"`
 	SatsWallet       SatsWalletInfo `json:"sats_wallet"`
+}
+
+// ModelPricingInfo holds per-model pricing from the gateway.
+type ModelPricingInfo struct {
+	PerMInputUSD  float64 `json:"per_m_input_usd"`
+	PerMOutputUSD float64 `json:"per_m_output_usd"`
 }
 
 // BtcPriceInfo is the BTC/USD pricing snapshot for the dashboard.
@@ -558,6 +565,10 @@ const dashboardHTML = `<!DOCTYPE html>
         <span class="stat-label">Model</span>
         <span class="stat-value" id="model" style="max-width:140px;text-align:right">—</span>
       </div>
+      <div class="stat" id="model-pricing-row" style="display:none;margin-top:4px">
+        <span class="stat-label">Rate</span>
+        <span class="stat-value" id="model-pricing" style="font-size:11px;color:#8b8b9e">—</span>
+      </div>
     </div>
     <div style="margin-top:8px;padding-top:8px;border-top:1px solid #2a2a38;display:flex;flex-wrap:wrap;gap:3px 0">
       <span class="legend-row"><span class="dot dot-green"></span>Earning</span>
@@ -758,6 +769,13 @@ function update(d) {
   utilBar.className = 'bar-fill ' + (g.util_pct > 80 ? 'bar-red' : g.util_pct > 50 ? 'bar-yellow' : 'bar-green');
 
   document.getElementById('model').textContent = d.model || '—';
+  const pricingRow = document.getElementById('model-pricing-row');
+  if (d.model_pricing) {
+    pricingRow.style.display = '';
+    document.getElementById('model-pricing').textContent = '$' + d.model_pricing.per_m_input_usd.toFixed(3) + ' / $' + d.model_pricing.per_m_output_usd.toFixed(2) + ' per M tok';
+  } else {
+    pricingRow.style.display = 'none';
+  }
 
   const gw = d.gateway;
   const connEl = document.getElementById('gw-connected');
