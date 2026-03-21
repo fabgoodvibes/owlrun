@@ -17,7 +17,7 @@ func TestBuildRegistration_Fields(t *testing.T) {
 	}
 	models := []string{"llama3:8b", "mistral:7b"}
 
-	raw, err := BuildRegistration("node-123", "sk-key", "SolanaWallet", "owlr_ref_abc", "us-east", "v0.1.0", info, models)
+	raw, err := BuildRegistration("node-123", "sk-key", "TestWallet", "owlr_ref_abc", "user@walletofsatoshi.com", 500, "us-east", "v0.1.0", info, models)
 	if err != nil {
 		t.Fatalf("BuildRegistration error: %v", err)
 	}
@@ -33,8 +33,8 @@ func TestBuildRegistration_Fields(t *testing.T) {
 	if p.APIKey != "sk-key" {
 		t.Errorf("APIKey = %q, want sk-key", p.APIKey)
 	}
-	if p.Wallet != "SolanaWallet" {
-		t.Errorf("Wallet = %q, want SolanaWallet", p.Wallet)
+	if p.Wallet != "TestWallet" {
+		t.Errorf("Wallet = %q, want TestWallet", p.Wallet)
 	}
 	if p.Version != "v0.1.0" {
 		t.Errorf("Version = %q, want v0.1.0", p.Version)
@@ -60,12 +60,15 @@ func TestBuildRegistration_Fields(t *testing.T) {
 	if p.OllamaURL != "http://localhost:11434" {
 		t.Errorf("OllamaURL = %q", p.OllamaURL)
 	}
+	if p.LightningAddress != "user@walletofsatoshi.com" {
+		t.Errorf("LightningAddress = %q, want user@walletofsatoshi.com", p.LightningAddress)
+	}
 }
 
 func TestBuildRegistration_NoModels(t *testing.T) {
 	info := gpu.Info{Vendor: "amd", Name: "AMD RX 7900 XTX", VRAMExact: false}
 
-	raw, err := BuildRegistration("n", "k", "", "", "", "dev", info, nil)
+	raw, err := BuildRegistration("n", "k", "", "", "", 0, "", "dev", info, nil)
 	if err != nil {
 		t.Fatalf("BuildRegistration error: %v", err)
 	}
@@ -86,7 +89,7 @@ func TestBuildRegistration_NoModels(t *testing.T) {
 
 func TestBuildRegistration_JSONRoundtrip(t *testing.T) {
 	info := gpu.Info{Vendor: "nvidia", Name: "RTX 3080", VRAMTotalMB: 10240}
-	raw, err := BuildRegistration("id", "key", "wallet", "", "eu-west", "v1", info, []string{"phi3:mini"})
+	raw, err := BuildRegistration("id", "key", "wallet", "", "", 500, "eu-west", "v1", info, []string{"phi3:mini"})
 	if err != nil {
 		t.Fatal(err)
 	}

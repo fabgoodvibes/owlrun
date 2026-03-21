@@ -4,6 +4,7 @@
 package config
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -30,10 +31,12 @@ type Config struct {
 }
 
 type AccountConfig struct {
-	NodeID      string // stable UUID generated once, persisted to conf
-	APIKey      string
-	Wallet      string // Solana pubkey (base58) or EVM address (0x...)
-	ReferralCode string // affiliate referral code (owlr_ref_<code>), optional
+	NodeID           string // stable UUID generated once, persisted to conf
+	APIKey           string
+	Wallet           string // Legacy payout address (deprecated — use LightningAddress)
+	ReferralCode     string // affiliate referral code (owlr_ref_<code>), optional
+	LightningAddress string // Lightning address for BTC payouts (e.g. user@walletofsatoshi.com), optional
+	RedeemThreshold  int    // sats threshold for auto-payout via Lightning (default 500)
 }
 
 type MarketplaceConfig struct {
@@ -80,7 +83,8 @@ func defaults() Config {
 
 	return Config{
 		Account: AccountConfig{
-			Wallet: wallet,
+			Wallet:          wallet,
+			RedeemThreshold: 500,
 		},
 		Marketplace: MarketplaceConfig{
 			Gateway:       gateway,
@@ -104,8 +108,12 @@ func defaults() Config {
 }
 
 // NeedsWallet returns true if the user hasn't set their own payout wallet.
-// This is the case when the wallet is empty or still the beta default.
+// This is the case when there's no Lightning address AND the legacy wallet
+// is empty or still the beta default.
 func NeedsWallet(cfg *Config) bool {
+	if cfg.Account.LightningAddress != "" {
+		return false
+	}
 	return cfg.Account.Wallet == "" || cfg.Account.Wallet == betaWallet
 }
 
@@ -134,6 +142,34 @@ func persistNodeID(id string) {
 	}
 	f.Section("account").Key("node_id").SetValue(id)
 	_ = f.SaveTo(path)
+}
+
+// SaveLightningAddress persists a Lightning address to the config file.
+func SaveLightningAddress(addr string) error {
+	path := Path()
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		return err
+	}
+	f, err := ini.LooseLoad(path)
+	if err != nil {
+		f = ini.Empty()
+	}
+	f.Section("account").Key("lightning_address").SetValue(addr)
+	return f.SaveTo(path)
+}
+
+// SaveRedeemThreshold persists a redeem threshold (sats) to the config file.
+func SaveRedeemThreshold(threshold int) error {
+	path := Path()
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		return err
+	}
+	f, err := ini.LooseLoad(path)
+	if err != nil {
+		f = ini.Empty()
+	}
+	f.Section("account").Key("redeem_threshold").SetValue(fmt.Sprintf("%d", threshold))
+	return f.SaveTo(path)
 }
 
 // Path returns the default config file location: ~/.owlrun/owlrun.conf
@@ -168,6 +204,8 @@ func Load() (Config, error) {
 		cfg.Account.APIKey = sec.Key("api_key").String()
 		cfg.Account.Wallet = sec.Key("wallet").String()
 		cfg.Account.ReferralCode = sec.Key("referral_code").String()
+		cfg.Account.LightningAddress = sec.Key("lightning_address").String()
+		cfg.Account.RedeemThreshold = sec.Key("redeem_threshold").MustInt(500)
 	}
 
 	if sec, err := f.GetSection("marketplace"); err == nil {

@@ -5,6 +5,7 @@ package marketplace
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"fmt"
 	"io"
 	"log"
@@ -32,6 +33,12 @@ type StatsFunc func() (utilPct int, vramFreeMB int, tempC int, powerW float64)
 // JobCompleteFunc is called when the gateway confirms a job has been billed.
 type JobCompleteFunc func(model string, tokens int, earnedUSD float64)
 
+// ModelPricing holds per-model pricing from the gateway's /v1/models endpoint.
+type ModelPricing struct {
+	PerMInputUSD  float64 `json:"per_m_input_usd"`
+	PerMOutputUSD float64 `json:"per_m_output_usd"`
+}
+
 // GatewayStats is the last heartbeat_ack received from the gateway.
 // Safe to read from any goroutine via Connector.GatewayStats().
 type GatewayStats struct {
@@ -41,7 +48,10 @@ type GatewayStats struct {
 	TokensToday      int
 	EarnedTodayUSD   float64
 	QueueDepthGlobal int
-	NextPayoutEpoch  string
+	BtcPrice         BtcPrice
+	Broadcasts       []Broadcast
+	BalanceSats      int64
+	ModelPricing     *ModelPricing
 }
 
 // wsMsg is the generic WebSocket message envelope used for all control traffic.
@@ -69,7 +79,12 @@ type wsMsg struct {
 	TokensToday      int     `json:"tokens_today,omitempty"`
 	EarnedTodayUSD   float64 `json:"earned_today_usd,omitempty"`
 	QueueDepthGlobal int     `json:"queue_depth_global,omitempty"`
-	NextPayoutEpoch  string  `json:"next_payout_epoch,omitempty"`
+	BtcLiveUsd       float64 `json:"btc_live_usd,omitempty"`
+	BtcYesterdayFix  float64 `json:"btc_yesterday_fix,omitempty"`
+	BtcDailyAvg      float64 `json:"btc_daily_avg,omitempty"`
+	BtcWeeklyAvg     float64 `json:"btc_weekly_avg,omitempty"`
+	BtcPriceStatus   string  `json:"btc_price_status,omitempty"`
+	BalanceSats      int64   `json:"balance_sats,omitempty"`
 
 	// Job complete (gateway → node)
 	Tokens    int     `json:"tokens,omitempty"`
@@ -77,8 +92,26 @@ type wsMsg struct {
 
 	// Reject (node → gateway)
 	Reason string `json:"reason,omitempty"`
+
+	// Broadcasts (gateway → node, in heartbeat_ack)
+	Broadcasts []Broadcast `json:"broadcasts,omitempty"`
 }
 
+// Broadcast is a gateway notification message.
+type Broadcast struct {
+	Message   string `json:"message"`
+	Timestamp string `json:"timestamp"`
+}
+
+
+// BtcPrice holds the gateway's BTC/USD pricing snapshot.
+type BtcPrice struct {
+	LiveUsd    float64 `json:"live_usd"`
+	YesterdayFix float64 `json:"yesterday_fix"`
+	DailyAvg   float64 `json:"daily_avg"`
+	WeeklyAvg  float64 `json:"weekly_avg"`
+	Status     string  `json:"status"`
+}
 // Connector manages the persistent WebSocket connection to the Owlrun Gateway.
 // It handles: registration, heartbeat, job assignment, proxy initiation, and
 // relaying gateway stats back to the dashboard.
@@ -92,6 +125,8 @@ type Connector struct {
 
 	getStats    StatsFunc
 	onComplete  JobCompleteFunc
+	onConnect       func()              // called when WS connects to gateway
+	onBalanceUpdate func(balanceSats int64) // called on heartbeat_ack with balance_sats
 
 	// gatewayClient is used for the gateway proxy POST (requires HTTP/2).
 	// If nil, http.DefaultClient is used (works in production behind Caddy+TLS).
@@ -106,6 +141,7 @@ type Connector struct {
 	model        string       // currently loaded Ollama model
 	conn         *websocket.Conn
 	gatewayStats GatewayStats
+	modelPricing *ModelPricing // fetched from /v1/models, persists across heartbeats
 	queueDepth   int
 
 	cancelFn context.CancelFunc
@@ -142,15 +178,19 @@ func NewConnector(
 	gatewayBase, proxyBase, apiKey, nodeID, wallet string,
 	getStats StatsFunc,
 	onComplete JobCompleteFunc,
+	onConnect func(),
+	onBalanceUpdate func(balanceSats int64),
 ) *Connector {
 	return &Connector{
-		gatewayBase: gatewayBase,
-		proxyBase:   proxyBase,
-		apiKey:      apiKey,
-		nodeID:      nodeID,
-		wallet:      wallet,
-		getStats:    getStats,
-		onComplete:  onComplete,
+		gatewayBase:     gatewayBase,
+		proxyBase:       proxyBase,
+		apiKey:          apiKey,
+		nodeID:          nodeID,
+		wallet:          wallet,
+		getStats:        getStats,
+		onComplete:      onComplete,
+		onConnect:       onConnect,
+		onBalanceUpdate: onBalanceUpdate,
 	}
 }
 
@@ -173,7 +213,9 @@ func (c *Connector) SetModel(model string) {
 func (c *Connector) Stats() GatewayStats {
 	c.mu.RLock()
 	defer c.mu.RUnlock()
-	return c.gatewayStats
+	s := c.gatewayStats
+	s.ModelPricing = c.modelPricing
+	return s
 }
 
 // Connect starts the registration + WS lifecycle in a background goroutine.
@@ -209,6 +251,24 @@ func (c *Connector) Disconnect() {
 		conn.Close(websocket.StatusGoingAway, "node disconnecting")
 	}
 	log.Printf("owlrun: gateway: disconnected")
+}
+
+// Reconnect tears down the current WS session and immediately reconnects
+// with the latest registration payload. Used when config changes (e.g.
+// redeem threshold, lightning address) need to take effect without a
+// full process restart.
+func (c *Connector) Reconnect() {
+	c.mu.RLock()
+	wasRunning := c.running
+	c.mu.RUnlock()
+	if !wasRunning {
+		return
+	}
+	log.Printf("owlrun: gateway: reconnecting to apply config changes")
+	c.Disconnect()
+	// Small delay to let the old WS close cleanly on the server side.
+	time.Sleep(500 * time.Millisecond)
+	c.Connect()
 }
 
 // runLoop keeps the WS connection alive, reconnecting on failure.
@@ -281,6 +341,53 @@ func (c *Connector) register(ctx context.Context) error {
 	return nil
 }
 
+// fetchModelPricing queries the gateway's public /v1/models endpoint to get
+// pricing for the currently loaded model. Non-critical — failures are logged
+// and silently ignored.
+func (c *Connector) fetchModelPricing(ctx context.Context) {
+	c.mu.RLock()
+	model := c.model
+	c.mu.RUnlock()
+	if model == "" {
+		return
+	}
+
+	url := DefaultAPIBase + "/v1/models"
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
+	if err != nil {
+		return
+	}
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		log.Printf("owlrun: gateway: fetch model pricing: %v", err)
+		return
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return
+	}
+
+	var result struct {
+		Data []struct {
+			ID      string        `json:"id"`
+			Pricing *ModelPricing `json:"pricing,omitempty"`
+		} `json:"data"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
+		return
+	}
+
+	for _, m := range result.Data {
+		if m.ID == model && m.Pricing != nil {
+			c.mu.Lock()
+			c.modelPricing = m.Pricing
+			c.mu.Unlock()
+			log.Printf("owlrun: gateway: model %s pricing: $%.3f/$%.3f per M tokens (in/out)", model, m.Pricing.PerMInputUSD, m.Pricing.PerMOutputUSD)
+			return
+		}
+	}
+}
+
 // runSession opens the WS and runs until it closes or ctx is cancelled.
 func (c *Connector) runSession(ctx context.Context) error {
 	wsURL := "wss" + c.gatewayBase[len("https"):] + wsPath + "?api_key=" + c.apiKey
@@ -305,6 +412,13 @@ func (c *Connector) runSession(ctx context.Context) error {
 	}()
 
 	log.Printf("owlrun: gateway: WS connected")
+
+	// Best-effort fetch of model pricing after WS connects.
+	go c.fetchModelPricing(ctx)
+
+	if c.onConnect != nil {
+		c.onConnect()
+	}
 
 	// Send first heartbeat immediately (don't wait 30s for ticker).
 	c.sendHeartbeat(ctx, conn)
@@ -372,9 +486,20 @@ func (c *Connector) readLoop(ctx context.Context, conn *websocket.Conn) error {
 				TokensToday:      msg.TokensToday,
 				EarnedTodayUSD:   msg.EarnedTodayUSD,
 				QueueDepthGlobal: msg.QueueDepthGlobal,
-				NextPayoutEpoch:  msg.NextPayoutEpoch,
+				BtcPrice: BtcPrice{
+					LiveUsd:    msg.BtcLiveUsd,
+					YesterdayFix: msg.BtcYesterdayFix,
+					DailyAvg:   msg.BtcDailyAvg,
+					WeeklyAvg:  msg.BtcWeeklyAvg,
+					Status:     msg.BtcPriceStatus,
+				},
+				Broadcasts:       msg.Broadcasts,
+				BalanceSats:      msg.BalanceSats,
 			}
 			c.mu.Unlock()
+			if c.onBalanceUpdate != nil && msg.BalanceSats > 0 {
+				go c.onBalanceUpdate(msg.BalanceSats)
+			}
 		case "job":
 			go c.handleJob(ctx, conn, msg)
 		case "job_complete":

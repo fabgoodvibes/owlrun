@@ -30,6 +30,7 @@ import (
 	"github.com/fabgoodvibes/owlrun/internal/idle"
 	"github.com/fabgoodvibes/owlrun/internal/inference"
 	"github.com/fabgoodvibes/owlrun/internal/marketplace"
+	"github.com/fabgoodvibes/owlrun/internal/wallet"
 	"github.com/godbus/dbus/v5"
 	"github.com/godbus/dbus/v5/prop"
 )
@@ -116,6 +117,7 @@ type sniDaemon struct {
 	tracker   *earnings.Tracker
 	ollamaMgr *inference.Manager
 	gateway   *marketplace.Router
+	ecash     *wallet.Wallet
 	dash      *dashboard.Server
 
 	// Precomputed icon pixmaps (decoded from ICO at startup).
@@ -180,12 +182,15 @@ func buildDaemon(cfg config.Config, dash *dashboard.Server) *sniDaemon {
 	monitor := gpu.NewMonitor(info, 10*time.Second)
 	tracker := earnings.New()
 
+	w := wallet.New(cfg.Marketplace.Gateway, cfg.Account.APIKey)
+
 	d := &sniDaemon{
 		cfg:        cfg,
 		nodeID:     nodeID,
 		gpuInfo:    info,
 		monitor:    monitor,
 		tracker:    tracker,
+		ecash:      w,
 		ollamaMgr:  inference.New(info),
 		dash:       dash,
 		jobMode:    cfg.Idle.JobMode,
@@ -203,6 +208,8 @@ func buildDaemon(cfg config.Config, dash *dashboard.Server) *sniDaemon {
 		nodeID,
 		cfg.Account.Wallet,
 		cfg.Account.ReferralCode,
+		cfg.Account.LightningAddress,
+		cfg.Account.RedeemThreshold,
 		cfg.Marketplace.Region,
 		buildinfo.Version,
 		info,
@@ -213,11 +220,42 @@ func buildDaemon(cfg config.Config, dash *dashboard.Server) *sniDaemon {
 		func(model string, tokens int, earnedUSD float64) {
 			tracker.Record(model, tokens, earnedUSD)
 		},
+		func() {
+			d.mu.Lock()
+			d.st = linuxEarning
+			d.mu.Unlock()
+		},
+		func(balanceSats int64) {
+			d.ecash.AutoClaim(balanceSats)
+		},
 	)
 
 	if dash != nil {
 		dash.SetProvider(d.statusSnapshot)
 		dash.SetTracker(tracker)
+		dash.SetClaimer(func(amountSats int64) (string, error) {
+			return d.ecash.Claim(amountSats)
+		})
+		dash.SetLightningAddressSetter(func(addr string) error {
+			if err := config.SaveLightningAddress(addr); err != nil {
+				return err
+			}
+			d.mu.Lock()
+			d.cfg.Account.LightningAddress = addr
+			d.mu.Unlock()
+			d.gateway.SetLightningAddress(addr)
+			return nil
+		})
+		dash.SetRedeemThresholdSetter(func(threshold int) error {
+			if err := config.SaveRedeemThreshold(threshold); err != nil {
+				return err
+			}
+			d.mu.Lock()
+			d.cfg.Account.RedeemThreshold = threshold
+			d.mu.Unlock()
+			d.gateway.SetRedeemThreshold(threshold)
+			return nil
+		})
 	}
 
 	return d
@@ -321,7 +359,7 @@ func (d *sniDaemon) applyStateLocked() {
 	case linuxMissingWallet:
 		icon = d.iconBlue
 		label = "🔵 Wallet not set"
-		desc = "Set your Solana wallet to start earning"
+		desc = "Set your Lightning address to start earning"
 	case linuxError:
 		icon = d.iconRed
 		label = "🔴 Error"
@@ -663,7 +701,9 @@ func (d *sniDaemon) statusSnapshot() dashboard.Status {
 	s.Network = buildinfo.Network
 	s.Wallet.Address = d.cfg.Account.Wallet
 	if config.NeedsWallet(&d.cfg) {
-		s.Wallet.Warning = "Set your Solana wallet in <code>~/.owlrun/owlrun.conf</code> under <code>[account]</code> → <code>wallet = YOUR_SOLANA_PUBKEY</code> to receive payouts."
+		s.Wallet.Warning = "Set your Lightning address in the Wallet section to start earning Bitcoin."
+	} else if d.cfg.Account.LightningAddress != "" {
+		s.Wallet.Configured = "Wallet configured at " + d.cfg.Account.LightningAddress
 	}
 	switch st {
 	case linuxEarning:
@@ -702,7 +742,52 @@ func (d *sniDaemon) statusSnapshot() dashboard.Status {
 	s.Gateway.TokensToday = gwStats.TokensToday
 	s.Gateway.EarnedTodayUSD = gwStats.EarnedTodayUSD
 	s.Gateway.QueueDepthGlobal = gwStats.QueueDepthGlobal
-	s.Gateway.NextPayoutEpoch = gwStats.NextPayoutEpoch
+	s.LightningAddress = d.cfg.Account.LightningAddress
+	s.RedeemThreshold = d.cfg.Account.RedeemThreshold
+
+	// Model pricing from gateway
+	if gwStats.ModelPricing != nil {
+		s.ModelPricing = &dashboard.ModelPricingInfo{
+			PerMInputUSD:  gwStats.ModelPricing.PerMInputUSD,
+			PerMOutputUSD: gwStats.ModelPricing.PerMOutputUSD,
+		}
+	}
+
+	// BTC price from gateway
+	s.BtcPrice = dashboard.BtcPriceInfo{
+		LiveUsd:    gwStats.BtcPrice.LiveUsd,
+		YesterdayFix: gwStats.BtcPrice.YesterdayFix,
+		DailyAvg:   gwStats.BtcPrice.DailyAvg,
+		WeeklyAvg:  gwStats.BtcPrice.WeeklyAvg,
+		Status:     gwStats.BtcPrice.Status,
+	}
+
+	// Map broadcasts from gateway to dashboard
+	for _, b := range gwStats.Broadcasts {
+		s.Broadcasts = append(s.Broadcasts, dashboard.BroadcastMsg{
+			Message:   b.Message,
+			Timestamp: b.Timestamp,
+		})
+	}
+
+	// Sats wallet
+	if d.ecash != nil {
+		ws := d.ecash.GetStats(gwStats.BalanceSats, gwStats.BtcPrice.LiveUsd)
+		var hist []dashboard.TokenHistoryItem
+		for _, t := range ws.TokenHistory {
+			hist = append(hist, dashboard.TokenHistoryItem{Token: t.Token, Sats: t.Sats, ClaimedAt: t.ClaimedAt})
+		}
+		s.SatsWallet = dashboard.SatsWalletInfo{
+			GatewaySats:  ws.GatewaySats,
+			LocalSats:    ws.LocalSats,
+			TotalSats:    ws.TotalSats,
+			USDApprox:    ws.USDApprox,
+			ProofCount:   ws.ProofCount,
+			LastClaim:    ws.LastClaim,
+			LastToken:    ws.LastToken,
+			TokenHistory: hist,
+		}
+	}
 
 	diskInfo, err := disk.Check(disk.OllamaModelsDir())
 	if err == nil {

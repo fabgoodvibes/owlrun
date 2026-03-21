@@ -28,6 +28,7 @@ import (
 	"github.com/fabgoodvibes/owlrun/internal/idle"
 	"github.com/fabgoodvibes/owlrun/internal/inference"
 	"github.com/fabgoodvibes/owlrun/internal/marketplace"
+	"github.com/fabgoodvibes/owlrun/internal/wallet"
 	"github.com/getlantern/systray"
 )
 
@@ -58,6 +59,7 @@ type Agent struct {
 	ollamaMgr      *inference.Manager
 	tracker        *earnings.Tracker
 	gateway        *marketplace.Router
+	ecash          *wallet.Wallet
 	dash           *dashboard.Server
 
 	// Tray menu items updated at runtime
@@ -85,6 +87,21 @@ func Run(cfg config.Config, dash *dashboard.Server) {
 	monitor := gpu.NewMonitor(info, 10*time.Second)
 	tracker := earnings.New()
 
+	w := wallet.New(cfg.Marketplace.Gateway, cfg.Account.APIKey)
+
+	a := &Agent{
+		cfg:        cfg,
+		nodeID:     nodeID,
+		gpuInfo:    info,
+		gpuMonitor: monitor,
+		state:      StateIdle,
+		jobMode:    cfg.Idle.JobMode,
+		tracker:    tracker,
+		ecash:      w,
+		ollamaMgr:  inference.New(info),
+		dash:       dash,
+	}
+
 	gw := marketplace.New(
 		cfg.Marketplace.Gateway,
 		cfg.Marketplace.ProxyBase,
@@ -92,6 +109,8 @@ func Run(cfg config.Config, dash *dashboard.Server) {
 		nodeID,
 		cfg.Account.Wallet,
 		cfg.Account.ReferralCode,
+		cfg.Account.LightningAddress,
+		cfg.Account.RedeemThreshold,
 		cfg.Marketplace.Region,
 		buildinfo.Version,
 		info,
@@ -102,20 +121,17 @@ func Run(cfg config.Config, dash *dashboard.Server) {
 		func(model string, tokens int, earnedUSD float64) {
 			tracker.Record(model, tokens, earnedUSD)
 		},
+		func() {
+			a.mu.Lock()
+			a.state = StateEarning
+			a.refreshMenuLocked()
+			a.mu.Unlock()
+		},
+		func(balanceSats int64) {
+			a.ecash.AutoClaim(balanceSats)
+		},
 	)
-
-	a := &Agent{
-		cfg:        cfg,
-		nodeID:     nodeID,
-		gpuInfo:    info,
-		gpuMonitor: monitor,
-		state:      StateIdle,
-		jobMode:    cfg.Idle.JobMode,
-		tracker:    tracker,
-		ollamaMgr:  inference.New(info),
-		gateway:    gw,
-		dash:       dash,
-	}
+	a.gateway = gw
 	systray.Run(a.onReady, a.onExit)
 }
 
@@ -179,6 +195,29 @@ func (a *Agent) onReady() {
 	if a.dash != nil {
 		a.dash.SetProvider(a.statusSnapshot)
 		a.dash.SetTracker(a.tracker)
+		a.dash.SetClaimer(func(amountSats int64) (string, error) {
+			return a.ecash.Claim(amountSats)
+		})
+		a.dash.SetLightningAddressSetter(func(addr string) error {
+			if err := config.SaveLightningAddress(addr); err != nil {
+				return err
+			}
+			a.mu.Lock()
+			a.cfg.Account.LightningAddress = addr
+			a.mu.Unlock()
+			a.gateway.SetLightningAddress(addr)
+			return nil
+		})
+		a.dash.SetRedeemThresholdSetter(func(threshold int) error {
+			if err := config.SaveRedeemThreshold(threshold); err != nil {
+				return err
+			}
+			a.mu.Lock()
+			a.cfg.Account.RedeemThreshold = threshold
+			a.mu.Unlock()
+			a.gateway.SetRedeemThreshold(threshold)
+			return nil
+		})
 	}
 
 	go a.gpuMonitor.Start()
@@ -563,7 +602,9 @@ func (a *Agent) statusSnapshot() dashboard.Status {
 	s.Network = buildinfo.Network
 	s.Wallet.Address = a.cfg.Account.Wallet
 	if config.NeedsWallet(&a.cfg) {
-		s.Wallet.Warning = "Set your Solana wallet in <code>~/.owlrun/owlrun.conf</code> under <code>[account]</code> → <code>wallet = YOUR_SOLANA_PUBKEY</code> to receive payouts."
+		s.Wallet.Warning = "Set your Lightning address in the Wallet section to start earning Bitcoin."
+	} else if a.cfg.Account.LightningAddress != "" {
+		s.Wallet.Configured = "Wallet configured at " + a.cfg.Account.LightningAddress
 	}
 	switch state {
 	case StateEarning:
@@ -607,7 +648,52 @@ func (a *Agent) statusSnapshot() dashboard.Status {
 	s.Gateway.TokensToday = gwStats.TokensToday
 	s.Gateway.EarnedTodayUSD = gwStats.EarnedTodayUSD
 	s.Gateway.QueueDepthGlobal = gwStats.QueueDepthGlobal
-	s.Gateway.NextPayoutEpoch = gwStats.NextPayoutEpoch
+	s.LightningAddress = a.cfg.Account.LightningAddress
+	s.RedeemThreshold = a.cfg.Account.RedeemThreshold
+
+	// Model pricing from gateway
+	if gwStats.ModelPricing != nil {
+		s.ModelPricing = &dashboard.ModelPricingInfo{
+			PerMInputUSD:  gwStats.ModelPricing.PerMInputUSD,
+			PerMOutputUSD: gwStats.ModelPricing.PerMOutputUSD,
+		}
+	}
+
+	// BTC price from gateway
+	s.BtcPrice = dashboard.BtcPriceInfo{
+		LiveUsd:    gwStats.BtcPrice.LiveUsd,
+		YesterdayFix: gwStats.BtcPrice.YesterdayFix,
+		DailyAvg:   gwStats.BtcPrice.DailyAvg,
+		WeeklyAvg:  gwStats.BtcPrice.WeeklyAvg,
+		Status:     gwStats.BtcPrice.Status,
+	}
+
+	// Map broadcasts from gateway to dashboard
+	for _, b := range gwStats.Broadcasts {
+		s.Broadcasts = append(s.Broadcasts, dashboard.BroadcastMsg{
+			Message:   b.Message,
+			Timestamp: b.Timestamp,
+		})
+	}
+
+	// Sats wallet
+	if a.ecash != nil {
+		ws := a.ecash.GetStats(gwStats.BalanceSats, gwStats.BtcPrice.LiveUsd)
+		var hist []dashboard.TokenHistoryItem
+		for _, t := range ws.TokenHistory {
+			hist = append(hist, dashboard.TokenHistoryItem{Token: t.Token, Sats: t.Sats, ClaimedAt: t.ClaimedAt})
+		}
+		s.SatsWallet = dashboard.SatsWalletInfo{
+			GatewaySats:  ws.GatewaySats,
+			LocalSats:    ws.LocalSats,
+			TotalSats:    ws.TotalSats,
+			USDApprox:    ws.USDApprox,
+			ProofCount:   ws.ProofCount,
+			LastClaim:    ws.LastClaim,
+			LastToken:    ws.LastToken,
+			TokenHistory: hist,
+		}
+	}
 
 	// Disk
 	diskInfo, err := disk.Check(disk.OllamaModelsDir())

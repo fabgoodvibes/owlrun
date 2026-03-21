@@ -67,7 +67,7 @@ func TestLoad_FullFile(t *testing.T) {
 	ini := `[account]
 node_id = test-node-123
 api_key  = sk-test
-wallet   = Abc123SolanaWallet
+wallet   = Abc123TestWallet
 
 [marketplace]
 gateway        = https://custom.gateway.example/v1
@@ -102,7 +102,7 @@ min_model_space_gb = 16
 	if cfg.Account.APIKey != "sk-test" {
 		t.Errorf("APIKey = %q", cfg.Account.APIKey)
 	}
-	if cfg.Account.Wallet != "Abc123SolanaWallet" {
+	if cfg.Account.Wallet != "Abc123TestWallet" {
 		t.Errorf("Wallet = %q", cfg.Account.Wallet)
 	}
 	if cfg.Marketplace.Gateway != "https://custom.gateway.example/v1" {

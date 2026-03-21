@@ -13,6 +13,9 @@ import (
 // MIT-licensed: users can override in owlrun.conf, but 99% won't.
 const DefaultGatewayBase = "https://node.owlrun.me"
 
+// DefaultAPIBase is the buyer-facing API endpoint (public, no auth required for /v1/models).
+const DefaultAPIBase = "https://api.owlrun.me"
+
 // registerPayload is the JSON body sent to POST /v1/gateway/register.
 type registerPayload struct {
 	NodeID       string   `json:"node_id"`
@@ -25,13 +28,15 @@ type registerPayload struct {
 	Models       []string `json:"models"`
 	OllamaURL    string   `json:"ollama_url"`
 	Region       string   `json:"region"`
-	Wallet       string   `json:"wallet,omitempty"`
-	ReferralCode string   `json:"referral_code,omitempty"`
-	Version      string   `json:"version"`
+	Wallet           string   `json:"wallet,omitempty"`
+	ReferralCode     string   `json:"referral_code,omitempty"`
+	LightningAddress    string   `json:"lightning_address,omitempty"`
+	RedeemThresholdSats int      `json:"redeem_threshold_sats,omitempty"`
+	Version             string   `json:"version"`
 }
 
 // BuildRegistration serialises the node registration payload.
-func BuildRegistration(nodeID, apiKey, wallet, referralCode, region, version string, info gpu.Info, models []string) ([]byte, error) {
+func BuildRegistration(nodeID, apiKey, wallet, referralCode, lightningAddress string, redeemThresholdSats int, region, version string, info gpu.Info, models []string) ([]byte, error) {
 	if region == "" {
 		region = "auto"
 	}
@@ -46,9 +51,11 @@ func BuildRegistration(nodeID, apiKey, wallet, referralCode, region, version str
 		Models:      models,
 		OllamaURL:   "http://localhost:11434",
 		Region:       region,
-		Wallet:       wallet,
-		ReferralCode: referralCode,
-		Version:      version,
+		Wallet:           wallet,
+		ReferralCode:        referralCode,
+		LightningAddress:    lightningAddress,
+		RedeemThresholdSats: redeemThresholdSats,
+		Version:             version,
 	}
 	return json.Marshal(p)
 }
