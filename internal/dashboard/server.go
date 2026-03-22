@@ -90,7 +90,9 @@ type BtcPriceInfo struct {
 
 // BroadcastMsg is a gateway notification displayed on the dashboard.
 type BroadcastMsg struct {
+	Title     string `json:"title"`
 	Message   string `json:"message"`
+	Severity  string `json:"severity"`
 	Timestamp string `json:"timestamp"`
 }
 
@@ -891,7 +893,8 @@ function update(d) {
     bcEl.innerHTML = sorted.map(function(b) {
       var t = new Date(b.timestamp);
       var ts = isNaN(t) ? b.timestamp : t.toLocaleString();
-      return '<div class="broadcast-item"><span class="broadcast-msg">' + escapeHtml(b.message) + '</span><span class="broadcast-time">' + ts + '</span></div>';
+      var title = b.title ? '<strong>' + escapeHtml(b.title) + '</strong> — ' : '';
+      return '<div class="broadcast-item"><span class="broadcast-msg">' + title + escapeHtml(b.message) + '</span><span class="broadcast-time">' + ts + '</span></div>';
     }).join('');
   } else {
     bcEl.innerHTML = '<div class="broadcast-empty">Broadcast notifications from the gateway will appear here.</div>';

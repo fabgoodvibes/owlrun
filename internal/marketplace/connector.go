@@ -103,8 +103,11 @@ type wsMsg struct {
 
 // Broadcast is a gateway notification message.
 type Broadcast struct {
+	ID        string `json:"id"`
+	Title     string `json:"title"`
 	Message   string `json:"message"`
-	Timestamp string `json:"timestamp"`
+	Severity  string `json:"severity"`
+	Timestamp string `json:"created_at"`
 }
 
 

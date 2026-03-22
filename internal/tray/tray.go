@@ -683,7 +683,9 @@ func (a *Agent) statusSnapshot() dashboard.Status {
 	// Map broadcasts from gateway to dashboard
 	for _, b := range gwStats.Broadcasts {
 		s.Broadcasts = append(s.Broadcasts, dashboard.BroadcastMsg{
+			Title:     b.Title,
 			Message:   b.Message,
+			Severity:  b.Severity,
 			Timestamp: b.Timestamp,
 		})
 	}
