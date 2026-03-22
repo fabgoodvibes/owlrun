@@ -17,8 +17,9 @@ var modelTable = []struct {
 	{"llama3.2:3b", 3},
 	{"qwen2.5:3b", 3},
 	{"llama3.2:1b", 1},
-	{"qwen2.5:1.5b", 0}, // runs well on CPU
-	{"qwen2.5:0.5b", 0}, // CPU-only fallback
+	{"deepseek-r1:1.5b", 0}, // reasoning/math, runs on CPU
+	{"qwen2.5:1.5b", 0},    // runs well on CPU
+	{"qwen2.5:0.5b", 0},    // CPU-only fallback
 }
 
 // RecommendModel returns the single best model tag for the available VRAM.

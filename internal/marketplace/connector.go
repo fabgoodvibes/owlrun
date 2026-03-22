@@ -23,8 +23,7 @@ const (
 	reconnectDelayInit  = 1 * time.Second
 	reconnectDelayMax   = 30 * time.Second
 	wsPath              = "/v1/gateway/ws"
-	jobFetchPath  = "/v1/gateway/jobs/%s/proxy/request"
-	jobSubmitPath = "/v1/gateway/jobs/%s/proxy/response"
+	jobFetchPath = "/v1/gateway/jobs/%s/proxy/request"
 )
 
 // StatsFunc is called by the connector to get live GPU stats for heartbeats.
@@ -92,6 +91,9 @@ type wsMsg struct {
 
 	// Reject (node → gateway)
 	Reason string `json:"reason,omitempty"`
+
+	// Proxy streaming (node → gateway, WS proxy)
+	Data string `json:"data,omitempty"` // Ollama response chunk (UTF-8)
 
 	// Broadcasts (gateway → node, in heartbeat_ack)
 	Broadcasts []Broadcast `json:"broadcasts,omitempty"`
@@ -558,29 +560,23 @@ func (c *Connector) handleJob(ctx context.Context, conn *websocket.Conn, job wsM
 			c.queueDepth--
 			c.mu.Unlock()
 		}()
-		if err := c.proxyJob(ctx, job.JobID); err != nil {
+		if err := c.proxyJob(ctx, conn, job.JobID); err != nil {
 			log.Printf("owlrun: gateway: proxy job %s: %v", job.JobID, err)
 		}
 	}()
 }
 
-// proxyJob claims the job from the gateway using Option A (two-request protocol):
+// proxyJob claims the job from the gateway and streams Ollama's response:
 //
 //  1. GET /v1/gateway/jobs/{job_id}/proxy/request  → receive buyer's request body.
 //     Gateway handler returns immediately → HTTP/2 END_STREAM → clean EOF.
 //  2. Forward buyer's request to local Ollama.
-//  3. POST /v1/gateway/jobs/{job_id}/proxy/response with Ollama's streaming response.
-//     Gateway pipes the POST body to the waiting buyer.
-//
-// This avoids the HTTP/2 full-duplex deadlock where Do() blocked forever on
-// writeLoopDone because the request body (the response body of step 1) could
-// only reach EOF when the gateway handler returned — which required the node to
-// finish writing — circular dependency.
-func (c *Connector) proxyJob(ctx context.Context, jobID string) error {
+//  3. Stream Ollama's response as WS proxy_chunk messages → gateway → buyer.
+//     Send proxy_done when stream ends. CF tunnel handles WS natively — no buffering.
+func (c *Connector) proxyJob(ctx context.Context, conn *websocket.Conn, jobID string) error {
 	base := c.proxyBaseURL()
 
 	// Step 1: GET buyer's request from gateway.
-	// Gateway handler returns immediately → END_STREAM → clean EOF on getResp.Body.
 	fetchURL := fmt.Sprintf(base+jobFetchPath, jobID)
 	getReq, err := http.NewRequestWithContext(ctx, http.MethodGet, fetchURL, nil)
 	if err != nil {
@@ -600,7 +596,6 @@ func (c *Connector) proxyJob(ctx context.Context, jobID string) error {
 		return fmt.Errorf("proxy fetch: HTTP %d: %s", getResp.StatusCode, snippet)
 	}
 
-	// Read buyer's request (clean EOF since GET handler returned).
 	buyerBody, err := io.ReadAll(getResp.Body)
 	if err != nil {
 		return fmt.Errorf("proxy fetch read: %w", err)
@@ -628,38 +623,39 @@ func (c *Connector) proxyJob(ctx context.Context, jobID string) error {
 		return fmt.Errorf("ollama: HTTP %d: %s", ollamaResp.StatusCode, snippet)
 	}
 
-	// Step 3: POST Ollama's response to gateway, which pipes it to the buyer.
-	// pr/pw pipe: Ollama's response flows ollamaResp.Body → pw → pr → gateway POST body.
-	// The POST request body (pr) is a local Go pipe — writeLoopDone closes when Ollama
-	// finishes and pw.Close() is called, so Do() returns cleanly. No deadlock.
-	pr, pw := io.Pipe()
-	defer pr.Close()
-
-	go func() {
-		_, copyErr := io.Copy(pw, ollamaResp.Body)
-		pw.CloseWithError(copyErr)
-	}()
-
-	submitURL := fmt.Sprintf(base+jobSubmitPath, jobID)
-	postReq, err := http.NewRequestWithContext(ctx, http.MethodPost, submitURL, pr)
-	if err != nil {
-		return err
+	// Step 3: Stream Ollama's response as WS proxy_chunk messages.
+	// Each chunk is a WS text message with job_id + data. Gateway writes each
+	// chunk to the buyer's ResponseWriter + Flush(). CF tunnel handles WS
+	// natively — zero buffering, real-time token streaming.
+	log.Printf("owlrun: gateway: job %s streaming response via WS", jobID)
+	buf := make([]byte, 4096)
+	for {
+		n, readErr := ollamaResp.Body.Read(buf)
+		if n > 0 {
+			if writeErr := wsjson.Write(ctx, conn, wsMsg{
+				Type:  "proxy_chunk",
+				JobID: jobID,
+				Data:  string(buf[:n]),
+			}); writeErr != nil {
+				return fmt.Errorf("proxy chunk write: %w", writeErr)
+			}
+		}
+		if readErr == io.EOF {
+			break
+		}
+		if readErr != nil {
+			return fmt.Errorf("ollama read: %w", readErr)
+		}
 	}
-	postReq.Header.Set("Authorization", "Bearer "+c.apiKey)
-	postReq.Header.Set("Content-Type", "application/json")
 
-	log.Printf("owlrun: gateway: job %s streaming response", jobID)
-	postResp, err := c.gwClient().Do(postReq)
-	log.Printf("owlrun: gateway: job %s proxy submit: err=%v", jobID, err)
-	if err != nil {
-		return fmt.Errorf("proxy submit: %w", err)
+	// Signal stream complete.
+	if err := wsjson.Write(ctx, conn, wsMsg{
+		Type:  "proxy_done",
+		JobID: jobID,
+	}); err != nil {
+		return fmt.Errorf("proxy done write: %w", err)
 	}
-	defer postResp.Body.Close()
 
-	if postResp.StatusCode != http.StatusOK {
-		snippet, _ := io.ReadAll(io.LimitReader(postResp.Body, 512))
-		return fmt.Errorf("proxy submit: HTTP %d: %s", postResp.StatusCode, snippet)
-	}
-	log.Printf("owlrun: gateway: job %s complete", jobID)
+	log.Printf("owlrun: gateway: job %s complete (WS proxy)", jobID)
 	return nil
 }
