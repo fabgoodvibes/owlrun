@@ -52,7 +52,7 @@ jobs:
           mkdir -p dist
           GOOS=windows GOARCH=amd64 CGO_ENABLED=0 \
             go build -ldflags='${{ steps.flags.outputs.ldflags }}' \
-            -o dist/owlrun.exe ./cmd/owlrun
+            -o dist/owlrun-windows-amd64.exe ./cmd/owlrun
 
       - name: Build — Linux amd64
         run: |
@@ -81,7 +81,7 @@ jobs:
       - name: Generate checksums
         run: |
           cd dist
-          sha256sum owlrun.exe owlrun-linux-amd64 owlrun-linux-arm64 \
+          sha256sum owlrun-windows-amd64.exe owlrun-linux-amd64 owlrun-linux-arm64 \
             owlrun-darwin-amd64 owlrun-darwin-arm64 > checksums.txt
           cat checksums.txt
 

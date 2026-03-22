@@ -30,7 +30,7 @@ $CONFIG_DIR   = Join-Path $env:USERPROFILE  '.owlrun'
 $CONFIG_FILE  = Join-Path $CONFIG_DIR       'owlrun.conf'
 $EXE_PATH     = Join-Path $INSTALL_DIR      'owlrun.exe'
 $TASK_NAME    = 'Owlrun'
-$DOWNLOAD_URL    = 'https://get.owlrun.me/download/beta/latest/owlrun.exe'
+$DOWNLOAD_URL    = 'https://get.owlrun.me/download/beta/latest/owlrun-windows-amd64.exe'
 $CHECKSUMS_URL   = 'https://get.owlrun.me/download/beta/latest/checksums.txt'
 $OLLAMA_URL   = 'https://ollama.com/download/OllamaSetup.exe'
 $OLLAMA_EXE   = Join-Path $env:LOCALAPPDATA 'Programs\Ollama\ollama.exe'
@@ -245,7 +245,7 @@ try {
   $wc.Headers.Add('User-Agent', "owlrun-installer/1.0")
   $wc.DownloadFile($CHECKSUMS_URL, $checksumsTmp)
   $lines = Get-Content $checksumsTmp
-  $entry = $lines | Where-Object { $_ -match 'owlrun\.exe$' } | Select-Object -First 1
+  $entry = $lines | Where-Object { $_ -match 'owlrun-windows-amd64\.exe$' } | Select-Object -First 1
   if ($entry) {
     $expected = ($entry -split '\s+')[0]
     $actual = (Get-FileHash -Path $EXE_PATH -Algorithm SHA256).Hash.ToLower()
@@ -259,7 +259,7 @@ try {
     }
     Write-OK "Checksum verified (SHA-256)"
   } else {
-    Write-Warn "owlrun.exe not found in checksums.txt — skipping verification"
+    Write-Warn "owlrun-windows-amd64.exe not found in checksums.txt — skipping verification"
   }
   Remove-Item $checksumsTmp -Force -ErrorAction SilentlyContinue
 } catch {
