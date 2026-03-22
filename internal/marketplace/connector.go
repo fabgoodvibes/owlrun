@@ -50,7 +50,9 @@ type GatewayStats struct {
 	BtcPrice         BtcPrice
 	Broadcasts       []Broadcast
 	BalanceSats      int64
-	ModelPricing     *ModelPricing
+	Models           []string                    // all registered model tags
+	ModelPricing     *ModelPricing               // primary model (backward compat)
+	AllModelPricing  map[string]*ModelPricing     // pricing per model
 }
 
 // wsMsg is the generic WebSocket message envelope used for all control traffic.
@@ -139,12 +141,13 @@ type Connector struct {
 	// Override in tests to point at a fake Ollama server.
 	ollamaBase string
 
-	mu           sync.RWMutex
-	models       map[string]bool // all registered models (set for O(1) lookup)
-	conn         *websocket.Conn
-	gatewayStats GatewayStats
-	modelPricing *ModelPricing // fetched from /v1/models, persists across heartbeats
-	queueDepth   int
+	mu              sync.RWMutex
+	models          map[string]bool            // all registered models (set for O(1) lookup)
+	conn            *websocket.Conn
+	gatewayStats    GatewayStats
+	modelPricing    *ModelPricing              // primary model pricing (backward compat)
+	allModelPricing map[string]*ModelPricing   // pricing for all registered models
+	queueDepth      int
 
 	cancelFn context.CancelFunc
 	running  bool
@@ -226,6 +229,12 @@ func (c *Connector) Stats() GatewayStats {
 	defer c.mu.RUnlock()
 	s := c.gatewayStats
 	s.ModelPricing = c.modelPricing
+	s.AllModelPricing = c.allModelPricing
+	// Build models list from the set.
+	s.Models = make([]string, 0, len(c.models))
+	for tag := range c.models {
+		s.Models = append(s.Models, tag)
+	}
 	return s
 }
 
@@ -392,19 +401,28 @@ func (c *Connector) fetchModelPricing(ctx context.Context) {
 		return
 	}
 
-	// Use pricing from the first registered model found (primary).
+	// Collect pricing for all registered models.
 	registered := make(map[string]bool, len(modelTags))
 	for _, t := range modelTags {
 		registered[t] = true
 	}
+	allPricing := make(map[string]*ModelPricing)
+	var primary *ModelPricing
 	for _, m := range result.Data {
 		if registered[m.ID] && m.Pricing != nil {
-			c.mu.Lock()
-			c.modelPricing = m.Pricing
-			c.mu.Unlock()
+			p := *m.Pricing // copy
+			allPricing[m.ID] = &p
+			if primary == nil {
+				primary = &p
+			}
 			log.Printf("owlrun: gateway: model %s pricing: $%.3f/$%.3f per M tokens (in/out)", m.ID, m.Pricing.PerMInputUSD, m.Pricing.PerMOutputUSD)
-			return
 		}
+	}
+	if len(allPricing) > 0 {
+		c.mu.Lock()
+		c.modelPricing = primary
+		c.allModelPricing = allPricing
+		c.mu.Unlock()
 	}
 }
 

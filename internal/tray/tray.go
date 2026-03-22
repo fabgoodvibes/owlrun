@@ -644,6 +644,7 @@ func (a *Agent) statusSnapshot() dashboard.Status {
 
 	// Gateway
 	gwStats := a.gateway.Stats()
+	s.Models = gwStats.Models
 	s.Gateway.Connected = gwStats.Connected
 	s.Gateway.GatewayStatus = gwStats.Status
 	s.Gateway.JobsToday = gwStats.JobsToday
@@ -658,6 +659,15 @@ func (a *Agent) statusSnapshot() dashboard.Status {
 		s.ModelPricing = &dashboard.ModelPricingInfo{
 			PerMInputUSD:  gwStats.ModelPricing.PerMInputUSD,
 			PerMOutputUSD: gwStats.ModelPricing.PerMOutputUSD,
+		}
+	}
+	if len(gwStats.AllModelPricing) > 0 {
+		s.AllModelPricing = make(map[string]*dashboard.ModelPricingInfo, len(gwStats.AllModelPricing))
+		for tag, p := range gwStats.AllModelPricing {
+			s.AllModelPricing[tag] = &dashboard.ModelPricingInfo{
+				PerMInputUSD:  p.PerMInputUSD,
+				PerMOutputUSD: p.PerMOutputUSD,
+			}
 		}
 	}
 

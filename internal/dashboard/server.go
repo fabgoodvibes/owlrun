@@ -40,8 +40,10 @@ type Status struct {
 		VRAMExact   bool    `json:"vram_exact"`
 	} `json:"gpu"`
 
-	Model        string              `json:"model"`
-	ModelPricing *ModelPricingInfo    `json:"model_pricing,omitempty"`
+	Model           string                        `json:"model"`
+	Models          []string                      `json:"models,omitempty"`
+	ModelPricing    *ModelPricingInfo              `json:"model_pricing,omitempty"`
+	AllModelPricing map[string]*ModelPricingInfo   `json:"all_model_pricing,omitempty"`
 
 	Earnings struct {
 		TodayUSD float64 `json:"today_usd"`
@@ -569,6 +571,10 @@ const dashboardHTML = `<!DOCTYPE html>
         <span class="stat-label">Rate</span>
         <span class="stat-value" id="model-pricing" style="font-size:11px;color:#8b8b9e">—</span>
       </div>
+      <div id="models-list" style="margin-top:8px;display:none">
+        <div style="font-size:11px;color:#8b8b9e;margin-bottom:4px">Registered models:</div>
+        <div id="models-items" style="font-size:12px;line-height:1.8"></div>
+      </div>
     </div>
     <div style="margin-top:8px;padding-top:8px;border-top:1px solid #2a2a38;display:flex;flex-wrap:wrap;gap:3px 0">
       <span class="legend-row"><span class="dot dot-green"></span>Earning</span>
@@ -775,6 +781,21 @@ function update(d) {
     document.getElementById('model-pricing').textContent = '$' + d.model_pricing.per_m_input_usd.toFixed(3) + ' / $' + d.model_pricing.per_m_output_usd.toFixed(2) + ' per M tok';
   } else {
     pricingRow.style.display = 'none';
+  }
+
+  // Multi-model list with per-model pricing
+  const modelsList = document.getElementById('models-list');
+  const modelsItems = document.getElementById('models-items');
+  if (d.models && d.models.length > 1) {
+    modelsList.style.display = '';
+    modelsItems.innerHTML = d.models.map(function(m) {
+      var pricing = (d.all_model_pricing && d.all_model_pricing[m]) || null;
+      var badge = (m === d.model) ? ' <span style="color:#4ade80;font-size:10px">PRIMARY</span>' : '';
+      var rate = pricing ? '<span style="color:#8b8b9e"> $' + pricing.per_m_output_usd.toFixed(2) + '/M out</span>' : '';
+      return '<div style="padding:2px 0"><span style="color:#e8e8f0">' + m + '</span>' + badge + rate + '</div>';
+    }).join('');
+  } else {
+    modelsList.style.display = 'none';
   }
 
   const gw = d.gateway;

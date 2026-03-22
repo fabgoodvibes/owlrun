@@ -738,6 +738,7 @@ func (d *sniDaemon) statusSnapshot() dashboard.Status {
 	s.Earnings.TotalUSD = snap.Total
 
 	gwStats := d.gateway.Stats()
+	s.Models = gwStats.Models
 	s.Gateway.Connected = gwStats.Connected
 	s.Gateway.GatewayStatus = gwStats.Status
 	s.Gateway.JobsToday = gwStats.JobsToday
@@ -752,6 +753,15 @@ func (d *sniDaemon) statusSnapshot() dashboard.Status {
 		s.ModelPricing = &dashboard.ModelPricingInfo{
 			PerMInputUSD:  gwStats.ModelPricing.PerMInputUSD,
 			PerMOutputUSD: gwStats.ModelPricing.PerMOutputUSD,
+		}
+	}
+	if len(gwStats.AllModelPricing) > 0 {
+		s.AllModelPricing = make(map[string]*dashboard.ModelPricingInfo, len(gwStats.AllModelPricing))
+		for tag, p := range gwStats.AllModelPricing {
+			s.AllModelPricing[tag] = &dashboard.ModelPricingInfo{
+				PerMInputUSD:  p.PerMInputUSD,
+				PerMOutputUSD: p.PerMOutputUSD,
+			}
 		}
 	}
 
