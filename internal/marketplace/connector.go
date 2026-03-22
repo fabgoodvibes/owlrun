@@ -140,7 +140,7 @@ type Connector struct {
 	ollamaBase string
 
 	mu           sync.RWMutex
-	model        string       // currently loaded Ollama model
+	models       map[string]bool // all registered models (set for O(1) lookup)
 	conn         *websocket.Conn
 	gatewayStats GatewayStats
 	modelPricing *ModelPricing // fetched from /v1/models, persists across heartbeats
@@ -204,11 +204,20 @@ func (c *Connector) SetRegistration(payload []byte) {
 	c.mu.Unlock()
 }
 
-// SetModel updates the currently loaded Ollama model tag.
-func (c *Connector) SetModel(model string) {
+// SetModels updates the set of models this node can serve.
+func (c *Connector) SetModels(models []string) {
+	m := make(map[string]bool, len(models))
+	for _, tag := range models {
+		m[tag] = true
+	}
 	c.mu.Lock()
-	c.model = model
+	c.models = m
 	c.mu.Unlock()
+}
+
+// SetModel updates a single model (convenience wrapper for SetModels).
+func (c *Connector) SetModel(model string) {
+	c.SetModels([]string{model})
 }
 
 // GatewayStats returns the latest heartbeat_ack snapshot from the gateway.
@@ -348,9 +357,13 @@ func (c *Connector) register(ctx context.Context) error {
 // and silently ignored.
 func (c *Connector) fetchModelPricing(ctx context.Context) {
 	c.mu.RLock()
-	model := c.model
+	// Grab all registered model tags for pricing lookup.
+	var modelTags []string
+	for tag := range c.models {
+		modelTags = append(modelTags, tag)
+	}
 	c.mu.RUnlock()
-	if model == "" {
+	if len(modelTags) == 0 {
 		return
 	}
 
@@ -379,12 +392,17 @@ func (c *Connector) fetchModelPricing(ctx context.Context) {
 		return
 	}
 
+	// Use pricing from the first registered model found (primary).
+	registered := make(map[string]bool, len(modelTags))
+	for _, t := range modelTags {
+		registered[t] = true
+	}
 	for _, m := range result.Data {
-		if m.ID == model && m.Pricing != nil {
+		if registered[m.ID] && m.Pricing != nil {
 			c.mu.Lock()
 			c.modelPricing = m.Pricing
 			c.mu.Unlock()
-			log.Printf("owlrun: gateway: model %s pricing: $%.3f/$%.3f per M tokens (in/out)", model, m.Pricing.PerMInputUSD, m.Pricing.PerMOutputUSD)
+			log.Printf("owlrun: gateway: model %s pricing: $%.3f/$%.3f per M tokens (in/out)", m.ID, m.Pricing.PerMInputUSD, m.Pricing.PerMOutputUSD)
 			return
 		}
 	}
@@ -506,9 +524,15 @@ func (c *Connector) readLoop(ctx context.Context, conn *websocket.Conn) error {
 			go c.handleJob(ctx, conn, msg)
 		case "job_complete":
 			if c.onComplete != nil {
-				c.mu.RLock()
-				model := c.model
-				c.mu.RUnlock()
+				model := msg.Model
+				if model == "" {
+					c.mu.RLock()
+					for m := range c.models {
+						model = m
+						break
+					}
+					c.mu.RUnlock()
+				}
 				c.onComplete(model, msg.Tokens, msg.EarnedUSD)
 			}
 		case "drain":
@@ -521,15 +545,15 @@ func (c *Connector) readLoop(ctx context.Context, conn *websocket.Conn) error {
 // handleJob evaluates a job assignment and accepts or rejects it.
 func (c *Connector) handleJob(ctx context.Context, conn *websocket.Conn, job wsMsg) {
 	c.mu.RLock()
-	model := c.model
+	hasModel := c.models[job.Model]
 	_, vramFree, _, _ := c.getStats()
 	c.mu.RUnlock()
 
-	// Reject if the required model isn't loaded or there isn't enough VRAM.
+	// Reject if the required model isn't registered or there isn't enough VRAM.
 	vramInsufficient := vramFree > 0 && job.VRAMRequiredMB > 0 && vramFree < job.VRAMRequiredMB
-	if model != job.Model || vramInsufficient {
+	if !hasModel || vramInsufficient {
 		reason := "model_not_loaded"
-		if model == job.Model {
+		if hasModel {
 			reason = "no_vram"
 		}
 		_ = wsjson.Write(ctx, conn, wsMsg{

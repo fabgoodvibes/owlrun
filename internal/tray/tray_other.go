@@ -213,10 +213,14 @@ func (d *daemon) startEarning() {
 		}
 	}
 
-	model := d.cfg.Inference.Model
-	if model == "" {
-		chosen, suggestions := d.ollamaMgr.SelectModel(d.gpuInfo.VRAMTotalGB, d.cfg.Inference.MaxVRAMPct)
-		if chosen == "" {
+	var models []string
+	if d.cfg.Inference.Model != "" {
+		models = []string{d.cfg.Inference.Model}
+		log.Printf("owlrun: starting — model %s", d.cfg.Inference.Model)
+	} else {
+		var suggestions []string
+		models, suggestions = d.ollamaMgr.SelectModels(d.gpuInfo.VRAMTotalGB, d.cfg.Inference.MaxVRAMPct)
+		if len(models) == 0 {
 			log.Printf("owlrun: no models installed — install one first, then restart")
 			for _, s := range suggestions {
 				log.Printf("  ollama pull %s", s)
@@ -227,11 +231,9 @@ func (d *daemon) startEarning() {
 			d.mu.Unlock()
 			return
 		}
-		model = chosen
-		log.Printf("owlrun: using installed model %s", model)
-	} else {
-		log.Printf("owlrun: starting — model %s", model)
+		log.Printf("owlrun: found %d installed models, primary: %s", len(models), models[0])
 	}
+	model := models[0]
 
 	d.mu.Lock()
 	d.model = model
@@ -242,7 +244,7 @@ func (d *daemon) startEarning() {
 	}
 	d.mu.Unlock()
 
-	d.gateway.SetModel(model)
+	d.gateway.SetModels(models)
 	d.gateway.Connect()
 	log.Printf("owlrun: ready — connecting to gateway")
 }

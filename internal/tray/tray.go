@@ -358,10 +358,14 @@ func (a *Agent) startEarning() {
 		}
 	}
 
-	model := a.cfg.Inference.Model
-	if model == "" {
-		chosen, suggestions := a.ollamaMgr.SelectModel(a.gpuInfo.VRAMTotalGB, a.cfg.Inference.MaxVRAMPct)
-		if chosen == "" {
+	var models []string
+	if a.cfg.Inference.Model != "" {
+		models = []string{a.cfg.Inference.Model}
+		log.Printf("owlrun: starting — model %s", a.cfg.Inference.Model)
+	} else {
+		var suggestions []string
+		models, suggestions = a.ollamaMgr.SelectModels(a.gpuInfo.VRAMTotalGB, a.cfg.Inference.MaxVRAMPct)
+		if len(models) == 0 {
 			log.Printf("owlrun: no models installed — install one first, then restart")
 			for _, s := range suggestions {
 				log.Printf("  ollama pull %s", s)
@@ -374,11 +378,9 @@ func (a *Agent) startEarning() {
 			a.mu.Unlock()
 			return
 		}
-		model = chosen
-		log.Printf("owlrun: using installed model %s", model)
-	} else {
-		log.Printf("owlrun: starting — model %s", model)
+		log.Printf("owlrun: found %d installed models, primary: %s", len(models), models[0])
 	}
+	model := models[0] // primary model — loaded into VRAM
 
 	a.mu.Lock()
 	a.model = model
@@ -390,7 +392,7 @@ func (a *Agent) startEarning() {
 	}
 	a.refreshMenuLocked()
 	a.mu.Unlock()
-	a.gateway.SetModel(model)
+	a.gateway.SetModels(models)
 	a.gateway.Connect()
 	log.Printf("owlrun: ready — connecting to gateway")
 }

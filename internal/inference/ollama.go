@@ -178,6 +178,31 @@ func (m *Manager) SelectModel(vramGB float64, maxVRAMPct int) (string, []string)
 	return "", ranked
 }
 
+// SelectModels returns ALL installed models that fit in VRAM, best first.
+// The first element is the primary model (loaded into VRAM). Others are
+// registered with the gateway so it can route multiple model requests.
+// Returns (models, nil) if at least one found, or (nil, suggestions).
+func (m *Manager) SelectModels(vramGB float64, maxVRAMPct int) ([]string, []string) {
+	ranked := gpu.RankedModels(vramGB, maxVRAMPct)
+	installed := m.ListInstalled()
+
+	installedSet := make(map[string]bool, len(installed))
+	for _, name := range installed {
+		installedSet[name] = true
+	}
+
+	var matched []string
+	for _, candidate := range ranked {
+		if installedSet[candidate] {
+			matched = append(matched, candidate)
+		}
+	}
+	if len(matched) == 0 {
+		return nil, ranked
+	}
+	return matched, nil
+}
+
 // ModelInstalled reports whether the given tag already exists locally.
 func (m *Manager) ModelInstalled(modelTag string) bool {
 	ctx, cancel := context.WithTimeout(context.Background(), healthTimeout)
