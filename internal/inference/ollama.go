@@ -203,6 +203,28 @@ func (m *Manager) SelectModels(vramGB float64, maxVRAMPct int) ([]string, []stri
 	return matched, nil
 }
 
+// DeleteModel removes a model from Ollama via DELETE /api/delete.
+func (m *Manager) DeleteModel(modelTag string) error {
+	body, _ := json.Marshal(map[string]string{"name": modelTag})
+	ctx, cancel := context.WithTimeout(context.Background(), healthTimeout)
+	defer cancel()
+	req, err := http.NewRequestWithContext(ctx, http.MethodDelete, ollamaHost+"/api/delete", bytes.NewReader(body))
+	if err != nil {
+		return err
+	}
+	req.Header.Set("Content-Type", "application/json")
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		return fmt.Errorf("delete model: %w", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		b, _ := io.ReadAll(resp.Body)
+		return fmt.Errorf("delete model: HTTP %d: %s", resp.StatusCode, b)
+	}
+	return nil
+}
+
 // ModelInstalled reports whether the given tag already exists locally.
 func (m *Manager) ModelInstalled(modelTag string) bool {
 	ctx, cancel := context.WithTimeout(context.Background(), healthTimeout)

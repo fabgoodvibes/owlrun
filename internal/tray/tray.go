@@ -218,6 +218,57 @@ func (a *Agent) onReady() {
 			a.gateway.SetRedeemThreshold(threshold)
 			return nil
 		})
+		a.dash.SetModelSwitcher(func(model string) error {
+			if !a.ollamaMgr.ModelInstalled(model) {
+				return fmt.Errorf("model %s not installed — download it first", model)
+			}
+			log.Printf("owlrun: switching primary model to %s", model)
+			if err := a.ollamaMgr.LoadModel(model); err != nil {
+				return fmt.Errorf("failed to load model: %w", err)
+			}
+			a.mu.Lock()
+			a.model = model
+			a.mu.Unlock()
+			// Re-register with all installed models, new primary first.
+			models, _ := a.ollamaMgr.SelectModels(a.gpuInfo.VRAMTotalGB, a.cfg.Inference.MaxVRAMPct)
+			a.gateway.SetModels(models)
+			go a.gateway.Reconnect()
+			return nil
+		})
+		a.dash.SetModelRemover(func(model string) error {
+			a.mu.Lock()
+			active := a.model
+			a.mu.Unlock()
+			if model == active {
+				return fmt.Errorf("cannot remove the active model — switch to another first")
+			}
+			if err := a.ollamaMgr.DeleteModel(model); err != nil {
+				return err
+			}
+			log.Printf("owlrun: removed model %s", model)
+			models, _ := a.ollamaMgr.SelectModels(a.gpuInfo.VRAMTotalGB, a.cfg.Inference.MaxVRAMPct)
+			a.gateway.SetModels(models)
+			go a.gateway.Reconnect()
+			return nil
+		})
+		a.dash.SetModelPuller(func(model string) <-chan dashboard.PullModelProgress {
+			out := make(chan dashboard.PullModelProgress, 8)
+			go func() {
+				defer close(out)
+				for p := range a.ollamaMgr.PullModel(model) {
+					pp := dashboard.PullModelProgress{
+						Status:    p.Status,
+						Total:     p.Total,
+						Completed: p.Completed,
+					}
+					if p.Err != nil {
+						pp.Error = p.Err.Error()
+					}
+					out <- pp
+				}
+			}()
+			return out
+		})
 	}
 
 	go a.gpuMonitor.Start()
@@ -634,8 +685,22 @@ func (a *Agent) statusSnapshot() dashboard.Status {
 	s.GPU.TempC = gpuStats.TemperatureC
 	s.GPU.PowerW = gpuStats.PowerDrawW
 
-	// Model
+	// Model + available models
 	s.Model = model
+	installed := a.ollamaMgr.ListInstalled()
+	installedSet := make(map[string]bool, len(installed))
+	for _, m := range installed {
+		installedSet[m] = true
+	}
+	for _, mi := range gpu.AllModelInfos(a.gpuInfo.VRAMTotalGB, a.cfg.Inference.MaxVRAMPct) {
+		s.AvailableModels = append(s.AvailableModels, dashboard.AvailableModel{
+			Tag:       mi.Tag,
+			VramGB:    mi.VramGB,
+			Installed: installedSet[mi.Tag],
+			Active:    mi.Tag == model,
+			Fits:      mi.Fits,
+		})
+	}
 
 	// Earnings
 	snap := a.tracker.Get()

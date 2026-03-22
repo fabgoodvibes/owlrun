@@ -151,6 +151,11 @@ func (r *Router) Disconnect() {
 	r.conn.Disconnect()
 }
 
+// Reconnect drops the WS and reconnects with updated registration.
+func (r *Router) Reconnect() {
+	r.conn.Reconnect()
+}
+
 // Stats returns the latest heartbeat_ack data from the gateway.
 func (r *Router) Stats() GatewayStats {
 	return r.conn.Stats()
