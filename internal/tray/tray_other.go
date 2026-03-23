@@ -47,10 +47,11 @@ type daemon struct {
 	gateway   *marketplace.Router
 	ecash     *wallet.Wallet
 
-	mu      sync.Mutex
-	st      state
-	model   string
-	jobMode string // "never", "idle", "always"
+	mu          sync.Mutex
+	st          state
+	errorDetail string // user-facing error message when state=stateError
+	model       string
+	jobMode     string // "never", "idle", "always"
 }
 
 // Run starts Owlrun in headless daemon mode. Blocks until SIGINT/SIGTERM.
@@ -248,20 +249,21 @@ func (d *daemon) check() {
 }
 
 func (d *daemon) startEarning() {
-	for _, s := range []struct {
-		name string
-		fn   func() error
-	}{
-		{"install ollama", d.ollamaMgr.EnsureInstalled},
-		{"start ollama", d.ollamaMgr.Start},
-	} {
-		if err := s.fn(); err != nil {
-			log.Printf("owlrun: %s: %v", s.name, err)
-			d.mu.Lock()
-			d.st = stateError
-			d.mu.Unlock()
-			return
-		}
+	if err := d.ollamaMgr.EnsureInstalled(); err != nil {
+		log.Printf("owlrun: install ollama: %v", err)
+		d.mu.Lock()
+		d.st = stateError
+		d.errorDetail = "Ollama is not installed. Download it from ollama.com/download, install it, then restart Owlrun."
+		d.mu.Unlock()
+		return
+	}
+	if err := d.ollamaMgr.Start(); err != nil {
+		log.Printf("owlrun: start ollama: %v", err)
+		d.mu.Lock()
+		d.st = stateError
+		d.errorDetail = "Ollama failed to start. Make sure Ollama is installed (ollama.com/download) and try restarting Owlrun."
+		d.mu.Unlock()
+		return
 	}
 
 	var models []string
@@ -279,6 +281,7 @@ func (d *daemon) startEarning() {
 			_ = d.ollamaMgr.Stop()
 			d.mu.Lock()
 			d.st = stateError
+			d.errorDetail = "No AI models installed. Open the dashboard at localhost:19131 and download a model, or run: ollama pull qwen2.5:0.5b"
 			d.mu.Unlock()
 			return
 		}
@@ -349,6 +352,7 @@ func (d *daemon) statusSnapshot() dashboard.Status {
 		s.State = "wallet"
 	case stateError:
 		s.State = "error"
+		s.ErrorDetail = d.errorDetail
 	default:
 		s.State = "idle"
 	}

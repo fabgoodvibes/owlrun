@@ -24,7 +24,8 @@ type Status struct {
 	NodeID  string `json:"node_id"`
 	Version string `json:"version"`
 	Network string `json:"network"` // "beta" | "production"
-	State   string `json:"state"`   // "earning" | "idle" | "paused"
+	State       string `json:"state"`        // "earning" | "idle" | "paused" | "error"
+	ErrorDetail string `json:"error_detail,omitempty"` // user-facing error message when state=error
 
 	Wallet struct {
 		Address    string `json:"address"`
@@ -1101,8 +1102,11 @@ function update(d) {
   } else { ww.classList.remove('configured'); ww.style.display = 'none'; }
 
   const [dotClass, label] = stateDisplay(d.state);
-  document.getElementById('state-badge').innerHTML =
-    '<span class="dot ' + dotClass + '"></span>' + label;
+  var badgeHtml = '<span class="dot ' + dotClass + '"></span>' + label;
+  if (d.state === 'error' && d.error_detail) {
+    badgeHtml += '<div style="margin-top:10px;padding:10px 12px;background:var(--wallet-warn-bg);border:1px solid #ef4444;border-radius:8px;font-size:13px;color:#fca5a5;line-height:1.5;font-weight:400">' + escapeHtml(d.error_detail) + '</div>';
+  }
+  document.getElementById('state-badge').innerHTML = badgeHtml;
 
   // Earnings: sats as hero number, USD below
   // Use gateway's earned_sats fields when available (authoritative, 1-sat minimum applied).

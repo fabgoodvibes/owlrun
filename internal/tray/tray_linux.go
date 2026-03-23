@@ -129,6 +129,7 @@ type sniDaemon struct {
 
 	mu             sync.Mutex
 	st             linuxState
+	errorDetail    string // user-facing error message when state=error
 	manuallyPaused bool
 	starting       bool
 	model          string
@@ -658,22 +659,25 @@ func (d *sniDaemon) check() {
 
 func (d *sniDaemon) startEarning() {
 	// Phase 1: get Ollama running.
-	for _, s := range []struct {
-		name string
-		fn   func() error
-	}{
-		{"install ollama", d.ollamaMgr.EnsureInstalled},
-		{"start ollama", d.ollamaMgr.Start},
-	} {
-		if err := s.fn(); err != nil {
-			log.Printf("owlrun: %s: %v", s.name, err)
-			d.mu.Lock()
-			d.starting = false
-			d.st = linuxError
-			d.applyStateLocked()
-			d.mu.Unlock()
-			return
-		}
+	if err := d.ollamaMgr.EnsureInstalled(); err != nil {
+		log.Printf("owlrun: install ollama: %v", err)
+		d.mu.Lock()
+		d.starting = false
+		d.st = linuxError
+		d.errorDetail = "Ollama is not installed. Download it from ollama.com/download, install it, then restart Owlrun."
+		d.applyStateLocked()
+		d.mu.Unlock()
+		return
+	}
+	if err := d.ollamaMgr.Start(); err != nil {
+		log.Printf("owlrun: start ollama: %v", err)
+		d.mu.Lock()
+		d.starting = false
+		d.st = linuxError
+		d.errorDetail = "Ollama failed to start. Make sure Ollama is installed (ollama.com/download) and try restarting Owlrun."
+		d.applyStateLocked()
+		d.mu.Unlock()
+		return
 	}
 
 	// Phase 2: select models — all installed that fit, best first.
@@ -693,6 +697,7 @@ func (d *sniDaemon) startEarning() {
 			d.mu.Lock()
 			d.starting = false
 			d.st = linuxError
+			d.errorDetail = "No AI models installed. Open the dashboard at localhost:19131 and download a model, or run: ollama pull qwen2.5:0.5b"
 			d.applyStateLocked()
 			d.mu.Unlock()
 			return
@@ -766,6 +771,7 @@ func (d *sniDaemon) statusSnapshot() dashboard.Status {
 		s.State = "wallet"
 	case linuxError:
 		s.State = "error"
+		s.ErrorDetail = d.errorDetail
 	case linuxPaused:
 		s.State = "paused"
 	default:

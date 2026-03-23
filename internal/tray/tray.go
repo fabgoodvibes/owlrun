@@ -48,8 +48,9 @@ const (
 type Agent struct {
 	mu             sync.Mutex
 	state          State
-	manuallyPaused bool // true = user explicitly paused; overrides idle monitor
-	starting       bool // true = Ollama startup goroutine is in progress
+	errorDetail    string // user-facing error message when state=StateError
+	manuallyPaused bool   // true = user explicitly paused; overrides idle monitor
+	starting       bool   // true = Ollama startup goroutine is in progress
 	model          string // currently loaded Ollama model tag
 	jobMode        string // "never", "idle", "always"
 	cfg            config.Config
@@ -391,22 +392,25 @@ func (a *Agent) checkAndUpdateState() {
 // startEarning runs the full Ollama startup pipeline in a background goroutine.
 // On success it transitions to Ready/MissingWallet; on failure it goes to Error.
 func (a *Agent) startEarning() {
-	for _, s := range []struct {
-		name string
-		fn   func() error
-	}{
-		{"install ollama", a.ollamaMgr.EnsureInstalled},
-		{"start ollama", a.ollamaMgr.Start},
-	} {
-		if err := s.fn(); err != nil {
-			log.Printf("owlrun: %s: %v", s.name, err)
-			a.mu.Lock()
-			a.starting = false
-			a.state = StateError
-			a.refreshMenuLocked()
-			a.mu.Unlock()
-			return
-		}
+	if err := a.ollamaMgr.EnsureInstalled(); err != nil {
+		log.Printf("owlrun: install ollama: %v", err)
+		a.mu.Lock()
+		a.starting = false
+		a.state = StateError
+		a.errorDetail = "Ollama is not installed. Download it from ollama.com/download, install it, then restart Owlrun."
+		a.refreshMenuLocked()
+		a.mu.Unlock()
+		return
+	}
+	if err := a.ollamaMgr.Start(); err != nil {
+		log.Printf("owlrun: start ollama: %v", err)
+		a.mu.Lock()
+		a.starting = false
+		a.state = StateError
+		a.errorDetail = "Ollama failed to start. Make sure Ollama is installed (ollama.com/download) and try restarting Owlrun."
+		a.refreshMenuLocked()
+		a.mu.Unlock()
+		return
 	}
 
 	var models []string
@@ -425,6 +429,7 @@ func (a *Agent) startEarning() {
 			a.mu.Lock()
 			a.starting = false
 			a.state = StateError
+			a.errorDetail = "No AI models installed. Open the dashboard at localhost:19131 and download a model, or run: ollama pull qwen2.5:0.5b"
 			a.refreshMenuLocked()
 			a.mu.Unlock()
 			return
@@ -668,6 +673,7 @@ func (a *Agent) statusSnapshot() dashboard.Status {
 		s.State = "wallet"
 	case StateError:
 		s.State = "error"
+		s.ErrorDetail = a.errorDetail
 	case StatePaused:
 		s.State = "paused"
 	default:
