@@ -715,6 +715,8 @@ func (a *Agent) statusSnapshot() dashboard.Status {
 	s.Gateway.JobsToday = gwStats.JobsToday
 	s.Gateway.TokensToday = gwStats.TokensToday
 	s.Gateway.EarnedTodayUSD = gwStats.EarnedTodayUSD
+	s.Gateway.EarnedTodaySats = gwStats.EarnedTodaySats
+	s.Gateway.EarnedTotalSats = gwStats.EarnedTotalSats
 	s.Gateway.QueueDepthGlobal = gwStats.QueueDepthGlobal
 	s.LightningAddress = a.cfg.Account.LightningAddress
 	s.RedeemThreshold = a.cfg.Account.RedeemThreshold

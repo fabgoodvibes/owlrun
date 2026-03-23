@@ -59,6 +59,8 @@ type Status struct {
 		JobsToday        int     `json:"jobs_today"`
 		TokensToday      int     `json:"tokens_today"`
 		EarnedTodayUSD   float64 `json:"earned_today_usd"`
+		EarnedTodaySats  int64   `json:"earned_today_sats"`  // authoritative, 1-sat min applied (from gateway)
+		EarnedTotalSats  int64   `json:"earned_total_sats"`  // lifetime sats earned (from gateway)
 		QueueDepthGlobal int     `json:"queue_depth_global"`
 	} `json:"gateway"`
 
@@ -905,12 +907,18 @@ const dashboardHTML = `<!DOCTYPE html>
 
   <div class="card">
     <div class="card-title">Earnings</div>
-    <div class="earnings-big" id="total">$0.000000</div>
-    <div class="earnings-sub">all time</div>
-    <div style="margin-top:10px" class="stat">
-      <span class="stat-label">Today</span>
-      <span class="stat-value" id="today">$0.000000</span>
+    <div class="earnings-big" id="total-sats">0 sats</div>
+    <div style="font-size:18px;color:var(--text-dim);font-variant-numeric:tabular-nums;margin-top:2px" id="total-usd">~$0.00</div>
+    <div style="margin-top:14px;padding-top:12px;border-top:1px solid var(--border)">
+      <div class="stat">
+        <span class="stat-label" style="font-size:17px">Today</span>
+        <span class="stat-value" id="today-sats" style="color:var(--green);font-size:20px;font-weight:700">0 sats</span>
+      </div>
+      <div style="text-align:right;margin-top:2px">
+        <span id="today-usd" style="font-size:14px;color:var(--text-muted)">~$0.00</span>
+      </div>
     </div>
+    <div style="margin-top:12px;font-size:12px;color:var(--text-muted);opacity:0.7">USD approximated at live BTC rate</div>
   </div>
 
   <div class="card">
@@ -1096,8 +1104,21 @@ function update(d) {
   document.getElementById('state-badge').innerHTML =
     '<span class="dot ' + dotClass + '"></span>' + label;
 
-  document.getElementById('today').textContent = fmt2(d.earnings.today_usd);
-  document.getElementById('total').textContent  = fmt2(d.earnings.total_usd);
+  // Earnings: sats as hero number, USD below
+  // Use gateway's earned_sats fields when available (authoritative, 1-sat minimum applied).
+  // Fallback: max(usd→sats conversion, jobs count) since every job earns at least 1 sat (Decision #50).
+  var btcRate = (d.btc_price && d.btc_price.live_usd) ? d.btc_price.live_usd : 0;
+  function usdToSatsRaw(usd) { return btcRate > 0 ? usd / btcRate * 100000000 : 0; }
+  var todaySatsRaw = d.gateway.earned_today_sats || Math.max(usdToSatsRaw(d.earnings.today_usd), d.gateway.jobs_today || 0);
+  var totalSatsRaw = d.gateway.earned_total_sats || Math.max(usdToSatsRaw(d.earnings.total_usd), todaySatsRaw);
+  function fmtSatsEarnings(raw) {
+    if (raw === 0) return '0 sats';
+    return Math.round(raw).toLocaleString() + ' sats';
+  }
+  document.getElementById('total-sats').textContent = fmtSatsEarnings(totalSatsRaw);
+  document.getElementById('total-usd').textContent = '~' + fmt2(d.earnings.total_usd);
+  document.getElementById('today-sats').textContent = fmtSatsEarnings(todaySatsRaw);
+  document.getElementById('today-usd').textContent = '~' + fmt2(d.earnings.today_usd);
 
   const g = d.gpu;
   document.getElementById('gpu-name').textContent  = g.name || 'No GPU detected';

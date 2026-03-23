@@ -46,6 +46,8 @@ type GatewayStats struct {
 	JobsToday        int
 	TokensToday      int
 	EarnedTodayUSD   float64
+	EarnedTodaySats  int64
+	EarnedTotalSats  int64
 	QueueDepthGlobal int
 	BtcPrice         BtcPrice
 	Broadcasts       []Broadcast
@@ -80,6 +82,8 @@ type wsMsg struct {
 	JobsToday        int     `json:"jobs_today,omitempty"`
 	TokensToday      int     `json:"tokens_today,omitempty"`
 	EarnedTodayUSD   float64 `json:"earned_today_usd,omitempty"`
+	EarnedTodaySats  int64   `json:"earned_today_sats,omitempty"`
+	EarnedTotalSats  int64   `json:"earned_total_sats,omitempty"`
 	QueueDepthGlobal int     `json:"queue_depth_global,omitempty"`
 	BtcLiveUsd       float64 `json:"btc_live_usd,omitempty"`
 	BtcYesterdayFix  float64 `json:"btc_yesterday_fix,omitempty"`
@@ -537,6 +541,8 @@ func (c *Connector) readLoop(ctx context.Context, conn *websocket.Conn) error {
 				JobsToday:        msg.JobsToday,
 				TokensToday:      msg.TokensToday,
 				EarnedTodayUSD:   msg.EarnedTodayUSD,
+				EarnedTodaySats:  msg.EarnedTodaySats,
+				EarnedTotalSats:  msg.EarnedTotalSats,
 				QueueDepthGlobal: msg.QueueDepthGlobal,
 				BtcPrice: BtcPrice{
 					LiveUsd:    msg.BtcLiveUsd,

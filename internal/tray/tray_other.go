@@ -386,6 +386,8 @@ func (d *daemon) statusSnapshot() dashboard.Status {
 	s.Gateway.JobsToday = gwStats.JobsToday
 	s.Gateway.TokensToday = gwStats.TokensToday
 	s.Gateway.EarnedTodayUSD = gwStats.EarnedTodayUSD
+	s.Gateway.EarnedTodaySats = gwStats.EarnedTodaySats
+	s.Gateway.EarnedTotalSats = gwStats.EarnedTotalSats
 	s.Gateway.QueueDepthGlobal = gwStats.QueueDepthGlobal
 	s.LightningAddress = d.cfg.Account.LightningAddress
 	s.RedeemThreshold = d.cfg.Account.RedeemThreshold
