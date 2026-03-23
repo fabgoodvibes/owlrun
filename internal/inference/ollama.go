@@ -17,6 +17,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"log"
 	"net/http"
 	"os/exec"
 	"sync"
@@ -60,13 +61,20 @@ func (m *Manager) EnsureInstalled() error {
 }
 
 // Start launches "ollama serve" and blocks until the API is healthy or the
-// timeout elapses. Returns an error if it fails to start.
+// timeout elapses. If Ollama is already running (e.g. as a Windows service
+// or user-started instance), skips launching and reuses the existing process.
 func (m *Manager) Start() error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
 	if m.cmd != nil {
-		return nil // already running
+		return nil // we started it ourselves
+	}
+
+	// Check if Ollama is already running (service, manual start, etc).
+	if m.healthyUnlocked() {
+		log.Printf("owlrun: ollama already running on %s — reusing", ollamaHost)
+		return nil
 	}
 
 	ollamaPath, err := findOllama()
@@ -77,6 +85,12 @@ func (m *Manager) Start() error {
 	cmd := exec.Command(ollamaPath, "serve")
 	cmd.Env = ollamaEnv(m.gpuInfo) // platform-specific GPU env vars
 	if err := cmd.Start(); err != nil {
+		// Start failed — but Ollama might have become healthy in the
+		// meantime (race with a service starting up). Check once more.
+		if m.healthyUnlocked() {
+			log.Printf("owlrun: ollama already running on %s — reusing", ollamaHost)
+			return nil
+		}
 		return fmt.Errorf("start ollama serve: %w", err)
 	}
 	m.cmd = cmd
