@@ -1448,32 +1448,47 @@ sc.onload = function() {
 sc.onerror = function() { /* graceful degradation — charts stay hidden */ };
 document.head.appendChild(sc);
 
-var chartOpts = {
-  responsive: true, maintainAspectRatio: false,
-  animation: false, resizeDelay: 0,
-  plugins: { legend: { display: false } },
-  scales: {
-    x: { ticks: { color: getComputedStyle(document.documentElement).getPropertyValue('--text-dim').trim(), font: { size: 12 }, maxRotation: 45 }, grid: { color: getComputedStyle(document.documentElement).getPropertyValue('--border').trim() } },
-    y: { beginAtZero: true, ticks: { color: getComputedStyle(document.documentElement).getPropertyValue('--text-dim').trim(), font: { size: 12 } }, grid: { color: getComputedStyle(document.documentElement).getPropertyValue('--border').trim() } }
-  }
-};
+var dimColor = getComputedStyle(document.documentElement).getPropertyValue('--text-dim').trim();
+var gridColor = getComputedStyle(document.documentElement).getPropertyValue('--border').trim();
+
+function makeChartOpts(yTickCb) {
+  return {
+    responsive: true, maintainAspectRatio: false,
+    animation: false, resizeDelay: 0,
+    interaction: { mode: 'index', intersect: false },
+    plugins: { legend: { display: true, labels: { color: dimColor, font: { size: 12 }, boxWidth: 14, padding: 12 } } },
+    scales: {
+      x: { ticks: { color: dimColor, font: { size: 12 }, maxRotation: 45 }, grid: { color: gridColor } },
+      y: { beginAtZero: true, position: 'left', ticks: { color: dimColor, font: { size: 12 }, callback: yTickCb || function(v) { return v; } }, grid: { color: gridColor } },
+      y1: { beginAtZero: true, position: 'right', ticks: { color: dimColor, font: { size: 12 }, callback: yTickCb || function(v) { return v; } }, grid: { drawOnChartArea: false } }
+    }
+  };
+}
+
+function smartUsd(v) {
+  if (v === 0) return '$0';
+  if (Math.abs(v) < 0.001) return '$' + v.toFixed(6);
+  if (Math.abs(v) < 0.01) return '$' + v.toFixed(4);
+  if (Math.abs(v) < 1) return '$' + v.toFixed(3);
+  return '$' + v.toFixed(2);
+}
 
 function initCharts() {
   jobsChart = new Chart(document.getElementById('chart-jobs').getContext('2d'), {
-    type: 'bar',
-    data: { labels: [], datasets: [{ data: [], backgroundColor: '#eab308cc', borderColor: '#eab308', borderWidth: 1, borderRadius: 3 }] },
-    options: chartOpts
+    type: 'line',
+    data: { labels: [], datasets: [
+      { label: 'Per period', data: [], borderColor: '#eab308', backgroundColor: '#eab30833', borderWidth: 2, pointRadius: 2, tension: 0.3, fill: true, yAxisID: 'y' },
+      { label: 'Cumulative', data: [], borderColor: '#3b82f6', backgroundColor: 'transparent', borderWidth: 2, pointRadius: 1, borderDash: [4,3], tension: 0.3, yAxisID: 'y1' }
+    ] },
+    options: makeChartOpts()
   });
   earningsChart = new Chart(document.getElementById('chart-earnings').getContext('2d'), {
-    type: 'bar',
-    data: { labels: [], datasets: [{ data: [], backgroundColor: '#22c55ecc', borderColor: '#22c55e', borderWidth: 1, borderRadius: 3 }] },
-    options: Object.assign({}, chartOpts, {
-      scales: Object.assign({}, chartOpts.scales, {
-        y: Object.assign({}, chartOpts.scales.y, { ticks: Object.assign({}, chartOpts.scales.y.ticks, {
-          callback: function(v) { return '$' + v.toFixed(2); }
-        })})
-      })
-    })
+    type: 'line',
+    data: { labels: [], datasets: [
+      { label: 'Per period', data: [], borderColor: '#22c55e', backgroundColor: '#22c55e33', borderWidth: 2, pointRadius: 2, tension: 0.3, fill: true, yAxisID: 'y' },
+      { label: 'Cumulative', data: [], borderColor: '#f59e0b', backgroundColor: 'transparent', borderWidth: 2, pointRadius: 1, borderDash: [4,3], tension: 0.3, yAxisID: 'y1' }
+    ] },
+    options: makeChartOpts(smartUsd)
   });
 }
 
@@ -1483,11 +1498,20 @@ async function fetchHistory() {
     var r = await fetch('/api/history?period=' + currentPeriod);
     var d = await r.json();
     var labels = d.buckets.map(function(b) { return b.label; });
+    var dailyJobs = d.buckets.map(function(b) { return b.jobs; });
+    var dailyEarned = d.buckets.map(function(b) { return b.earned; });
+    var cumJobs = [], cumEarned = [], sj = 0, se = 0;
+    for (var i = 0; i < dailyJobs.length; i++) {
+      sj += dailyJobs[i]; cumJobs.push(sj);
+      se += dailyEarned[i]; cumEarned.push(se);
+    }
     jobsChart.data.labels = labels;
-    jobsChart.data.datasets[0].data = d.buckets.map(function(b) { return b.jobs; });
+    jobsChart.data.datasets[0].data = dailyJobs;
+    jobsChart.data.datasets[1].data = cumJobs;
     jobsChart.update('none');
     earningsChart.data.labels = labels;
-    earningsChart.data.datasets[0].data = d.buckets.map(function(b) { return b.earned; });
+    earningsChart.data.datasets[0].data = dailyEarned;
+    earningsChart.data.datasets[1].data = cumEarned;
     earningsChart.update('none');
   } catch(e) {}
 }
