@@ -762,15 +762,24 @@ func (a *Agent) statusSnapshot() dashboard.Status {
 		for _, t := range ws.TokenHistory {
 			hist = append(hist, dashboard.TokenHistoryItem{Token: t.Token, Sats: t.Sats, ClaimedAt: t.ClaimedAt})
 		}
+		var wdHist []dashboard.WithdrawHistoryItem
+		for _, w := range gwStats.WithdrawHistory {
+			wdHist = append(wdHist, dashboard.WithdrawHistoryItem{
+				AmountSats:  w.AmountSats,
+				PaymentHash: w.PaymentHash,
+				Timestamp:   w.Timestamp,
+			})
+		}
 		s.SatsWallet = dashboard.SatsWalletInfo{
-			GatewaySats:  ws.GatewaySats,
-			LocalSats:    ws.LocalSats,
-			TotalSats:    ws.TotalSats,
-			USDApprox:    ws.USDApprox,
-			ProofCount:   ws.ProofCount,
-			LastClaim:    ws.LastClaim,
-			LastToken:    ws.LastToken,
-			TokenHistory: hist,
+			GatewaySats:     ws.GatewaySats,
+			LocalSats:       ws.LocalSats,
+			TotalSats:       ws.TotalSats,
+			USDApprox:       ws.USDApprox,
+			ProofCount:      ws.ProofCount,
+			LastClaim:       ws.LastClaim,
+			LastToken:       ws.LastToken,
+			TokenHistory:    hist,
+			WithdrawHistory: wdHist,
 		}
 	}
 

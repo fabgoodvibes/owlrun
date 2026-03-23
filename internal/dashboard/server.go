@@ -110,7 +110,15 @@ type SatsWalletInfo struct {
 	ProofCount   int                `json:"proof_count"`   // number of local proofs
 	LastClaim    string             `json:"last_claim"`    // ISO timestamp
 	LastToken    string             `json:"last_token"`    // most recent cashuA token (for QR)
-	TokenHistory []TokenHistoryItem `json:"token_history"` // last N tokens
+	TokenHistory    []TokenHistoryItem    `json:"token_history"`    // last N tokens
+	WithdrawHistory []WithdrawHistoryItem `json:"withdraw_history"` // last N Lightning payouts
+}
+
+// WithdrawHistoryItem is a Lightning payout record for the dashboard.
+type WithdrawHistoryItem struct {
+	AmountSats  int64  `json:"amount_sats"`
+	PaymentHash string `json:"payment_hash"`
+	Timestamp   string `json:"timestamp"`
 }
 
 // TokenHistoryItem is a claimed ecash token with metadata for the dashboard.
@@ -718,6 +726,14 @@ const dashboardHTML = `<!DOCTYPE html>
   .theme-toggle::after { content: ''; position: absolute; top: 2px; left: 2px; width: 18px; height: 18px; border-radius: 50%; background: var(--accent); transition: transform var(--transition); box-shadow: 0 1px 4px rgba(0,0,0,0.2); }
   [data-theme="dark"] .theme-toggle::after { transform: translateX(20px); }
   .theme-label { font-size: 12px; color: var(--text-muted); display: flex; align-items: center; gap: 6px; }
+  @keyframes spin { to { transform: rotate(360deg); } }
+  .spinner { display: inline-block; width: 12px; height: 12px; border: 2px solid var(--border); border-top-color: var(--accent); border-radius: 50%; animation: spin 0.6s linear infinite; vertical-align: middle; }
+  .payout-item { display: flex; justify-content: space-between; align-items: center; padding: 6px 0; border-bottom: 1px solid var(--border); font-size: 13px; }
+  .payout-item:last-child { border-bottom: none; }
+  .payout-amount { color: var(--green); font-weight: 600; font-variant-numeric: tabular-nums; }
+  .payout-link { color: var(--accent); text-decoration: none; font-size: 11px; font-family: monospace; }
+  .payout-link:hover { text-decoration: underline; }
+  .payout-time { color: var(--text-muted); font-size: 11px; }
 </style>
 </head>
 <body>
@@ -824,6 +840,11 @@ const dashboardHTML = `<!DOCTYPE html>
           <span class="stat-label">Next payout est.</span>
           <span class="stat-value" id="wallet-next-payout" style="font-size:14px;color:#aaaabb">—</span>
         </div>
+      </div>
+      <!-- Recent payouts -->
+      <div id="payout-history" style="display:none;margin-top:12px;padding-top:12px;border-top:1px solid var(--border)">
+        <div style="font-size:12px;color:var(--text-dim);font-weight:600;text-transform:uppercase;letter-spacing:0.5px;margin-bottom:6px">Recent Payouts</div>
+        <div id="payout-list"></div>
       </div>
 
       <!-- Fee disclaimer -->
@@ -1104,36 +1125,44 @@ function update(d) {
 
     var diskInfo = d.disk ? d.disk.free_gb.toFixed(1) + ' GB free' : '';
     var html = '<div style="font-size:11px;color:var(--text-muted);margin-bottom:6px;display:flex;justify-content:space-between"><span>Models</span><span>' + diskInfo + '</span></div>';
-    if (pulling) html += '<div id="pull-progress" style="margin-bottom:8px;padding:8px 10px;border:1px solid #f7931a;border-radius:8px;background:var(--wallet-warn-bg);font-size:12px;color:var(--accent)">Downloading…</div>';
+    if (pulling) html += '<div id="pull-progress" style="margin-bottom:8px;padding:8px 10px;border:1px solid #f7931a;border-radius:8px;background:var(--wallet-warn-bg);font-size:12px;color:var(--accent)"><span class="spinner"></span> Downloading…</div>';
 
+    var registeredModels = d.models || [];
     function renderModelCard(m) {
       var pricing = (d.all_model_pricing && d.all_model_pricing[m.tag]) || null;
       var isActive = m.active;
+      var isRegistered = registeredModels.indexOf(m.tag) >= 0;
       var isDark = document.documentElement.getAttribute('data-theme') === 'dark';
-      var border = isActive ? '#4ade80' : m.installed ? (isDark?'#2a2a38':'#e0e0ea') : (isDark?'#1a1a24':'#eee');
-      var bg = isActive ? (isDark?'#1a2a1a':'#ecfdf5') : (isDark?'#141420':'#fafafa');
+      var border = isActive ? '#4ade80' : isRegistered ? (isDark?'#2a5a3a':'#b6e8c8') : m.installed ? (isDark?'#2a2a38':'#e0e0ea') : (isDark?'#1a1a24':'#eee');
+      var bg = isActive ? (isDark?'#1a2a1a':'#ecfdf5') : isRegistered ? (isDark?'#162218':'#f0fdf4') : (isDark?'#141420':'#fafafa');
       var opacity = m.installed || m.fits ? '1' : '0.5';
       var h = '<div style="display:flex;align-items:center;justify-content:space-between;padding:8px 10px;margin-bottom:4px;border:1px solid ' + border + ';border-radius:8px;background:' + bg + ';opacity:' + opacity + '">';
       h += '<div style="display:flex;align-items:center;gap:8px;flex:1;min-width:0">';
-      h += '<div style="width:8px;height:8px;border-radius:50%;flex-shrink:0;background:' + (isActive ? '#4ade80' : m.installed ? '#555' : '#333') + '"></div>';
+      h += '<div style="width:8px;height:8px;border-radius:50%;flex-shrink:0;background:' + (isActive ? '#4ade80' : isRegistered ? '#22c55e' : m.installed ? '#555' : '#333') + '"></div>';
       h += '<div style="min-width:0">';
       h += '<div style="font-size:13px;color:#e8e8f0;font-weight:' + (isActive ? '600' : '400') + ';white-space:nowrap;overflow:hidden;text-overflow:ellipsis">' + escapeHtml(m.tag) + '</div>';
       var meta = m.vram_gb > 0 ? m.vram_gb + ' GB VRAM' : 'CPU';
-      if (pricing) meta += ' · $' + pricing.per_m_output_usd.toFixed(2) + '/M';
+      if (pricing) meta += ' &middot; $' + pricing.per_m_output_usd.toFixed(2) + '/M';
       h += '<div style="font-size:10px;color:var(--text-muted)">' + meta + '</div>';
       h += '</div></div>';
-      // Action buttons
+      // Action buttons + badges
       if (isActive) {
         h += '<span style="font-size:9px;background:#4ade80;color:#000;padding:2px 6px;border-radius:4px;font-weight:700;flex-shrink:0">ACTIVE</span>';
+      } else if (isRegistered && m.installed && !pulling) {
+        h += '<div style="display:flex;gap:4px;align-items:center;flex-shrink:0">';
+        h += '<span style="font-size:9px;background:#22c55e33;color:#4ade80;padding:2px 6px;border-radius:4px;font-weight:600">AVAILABLE</span>';
+        h += '<button onclick="switchModel(\'' + escapeHtml(m.tag) + '\')" style="font-size:10px;background:var(--bg-card-hover);color:var(--text);border:1px solid var(--border-active);border-radius:4px;padding:2px 8px;cursor:pointer">Activate</button>';
+        h += '<button onclick="removeModel(\'' + escapeHtml(m.tag) + '\')" style="font-size:10px;background:var(--bg);color:#ef4444;border:1px solid #ef444444;border-radius:4px;padding:2px 6px;cursor:pointer" title="Remove model">✕</button>';
+        h += '</div>';
       } else if (m.installed && !pulling) {
         h += '<div style="display:flex;gap:4px;flex-shrink:0">';
         h += '<button onclick="switchModel(\'' + escapeHtml(m.tag) + '\')" style="font-size:10px;background:var(--bg-card-hover);color:var(--text);border:1px solid var(--border-active);border-radius:4px;padding:2px 8px;cursor:pointer">Activate</button>';
         h += '<button onclick="removeModel(\'' + escapeHtml(m.tag) + '\')" style="font-size:10px;background:var(--bg);color:#ef4444;border:1px solid #ef444444;border-radius:4px;padding:2px 6px;cursor:pointer" title="Remove model">✕</button>';
         h += '</div>';
       } else if (!m.installed && !pulling) {
-        h += '<button onclick="pullModel(\'' + escapeHtml(m.tag) + '\',' + m.vram_gb + ')" style="font-size:10px;background:var(--bg);color:var(--accent);border:1px solid rgba(245,158,11,0.27);border-radius:4px;padding:2px 8px;cursor:pointer;flex-shrink:0">Download</button>';
+        h += '<button id="dl-' + escapeHtml(m.tag).replace(/[:.]/g,'_') + '" onclick="pullModel(\'' + escapeHtml(m.tag) + '\',' + m.vram_gb + ')" style="font-size:10px;background:var(--bg);color:var(--accent);border:1px solid rgba(245,158,11,0.27);border-radius:4px;padding:2px 8px;cursor:pointer;flex-shrink:0">Download</button>';
       } else {
-        h += '<span style="font-size:10px;color:var(--text-muted);flex-shrink:0">…</span>';
+        h += '<span style="font-size:10px;color:var(--text-muted);flex-shrink:0"><span class="spinner"></span></span>';
       }
       h += '</div>';
       return h;
@@ -1198,6 +1227,25 @@ function update(d) {
       document.getElementById('wallet-next-payout').textContent = pct + '% to threshold (' + thr + ' sats)';
     } else {
       document.getElementById('wallet-next-payout').textContent = '—';
+    }
+    // Payout history (Lightning withdrawals)
+    var phEl = document.getElementById('payout-history');
+    var plEl = document.getElementById('payout-list');
+    if (sw.withdraw_history && sw.withdraw_history.length > 0) {
+      phEl.style.display = '';
+      plEl.innerHTML = sw.withdraw_history.slice(0, 3).map(function(w) {
+        var ts = new Date(w.timestamp);
+        var timeStr = isNaN(ts) ? w.timestamp : ts.toLocaleString();
+        var hashShort = w.payment_hash ? w.payment_hash.substring(0, 8) + '…' + w.payment_hash.substring(w.payment_hash.length - 6) : '';
+        var explorerUrl = w.payment_hash ? 'https://mempool.space/lightning/payment/' + w.payment_hash : '';
+        var h = '<div class="payout-item">';
+        h += '<div><span class="payout-amount">&#9889; ' + fmtSats(w.amount_sats) + '</span><div class="payout-time">' + timeStr + '</div></div>';
+        if (explorerUrl) h += '<a class="payout-link" href="' + explorerUrl + '" target="_blank" rel="noopener">' + hashShort + '</a>';
+        h += '</div>';
+        return h;
+      }).join('');
+    } else {
+      phEl.style.display = 'none';
     }
     // Ecash advanced section
     document.getElementById('ecash-local-sats').textContent = fmtSats(sw.local_sats);
@@ -1476,6 +1524,11 @@ async function switchModel(tag) {
 }
 
 async function pullModel(tag, vramGb) {
+  // Show spinner on download button while checking size
+  var btnId = 'dl-' + tag.replace(/[:.]/g, '_');
+  var dlBtn = document.getElementById(btnId);
+  if (dlBtn) { dlBtn.disabled = true; dlBtn.innerHTML = '<span class="spinner"></span> Checking…'; }
+
   var st = await (await fetch('/api/status')).json();
   var diskFree = st.disk ? st.disk.free_gb : 0;
   var diskTotal = st.disk ? st.disk.total_gb : 0;
@@ -1488,6 +1541,7 @@ async function pullModel(tag, vramGb) {
     var sizeData = await sizeResp.json();
     if (sizeData.size_mb > 0) { sizeMb = sizeData.size_mb; sizeSource = 'registry'; }
   } catch(e) {}
+  if (dlBtn) { dlBtn.disabled = false; dlBtn.textContent = 'Download'; }
 
   // Step 2: Fallback estimate if registry failed
   if (sizeMb === 0) {
@@ -1525,7 +1579,7 @@ async function pullModel(tag, vramGb) {
     var ms = document.getElementById('models-section');
     ms.insertBefore(progDiv, ms.children[1]);
   }
-  progDiv.textContent = 'Starting download…';
+  progDiv.innerHTML = '<span class="spinner"></span> Starting download…';
 
   try {
     var resp = await fetch('/api/pull-model', {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({model:tag})});

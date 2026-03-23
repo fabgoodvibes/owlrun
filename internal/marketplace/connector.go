@@ -53,6 +53,7 @@ type GatewayStats struct {
 	Models           []string                    // all registered model tags
 	ModelPricing     *ModelPricing               // primary model (backward compat)
 	AllModelPricing  map[string]*ModelPricing     // pricing per model
+	WithdrawHistory  []WithdrawRecord            // last N Lightning payouts from gateway
 }
 
 // wsMsg is the generic WebSocket message envelope used for all control traffic.
@@ -99,6 +100,9 @@ type wsMsg struct {
 
 	// Broadcasts (gateway → node, in heartbeat_ack)
 	Broadcasts []Broadcast `json:"broadcasts,omitempty"`
+
+	// Withdraw history (gateway → node, in heartbeat_ack)
+	WithdrawHistory []WithdrawRecord `json:"withdraw_history,omitempty"`
 }
 
 // Broadcast is a gateway notification message.
@@ -108,6 +112,13 @@ type Broadcast struct {
 	Message   string `json:"message"`
 	Severity  string `json:"severity"`
 	Timestamp string `json:"created_at"`
+}
+
+// WithdrawRecord is a Lightning payout sent by the gateway auto-redeemer.
+type WithdrawRecord struct {
+	AmountSats  int64  `json:"amount_sats"`
+	PaymentHash string `json:"payment_hash"`
+	Timestamp   string `json:"timestamp"`
 }
 
 
@@ -536,6 +547,7 @@ func (c *Connector) readLoop(ctx context.Context, conn *websocket.Conn) error {
 				},
 				Broadcasts:       msg.Broadcasts,
 				BalanceSats:      msg.BalanceSats,
+				WithdrawHistory:  msg.WithdrawHistory,
 			}
 			c.mu.Unlock()
 			if c.onBalanceUpdate != nil && msg.BalanceSats > 0 {
