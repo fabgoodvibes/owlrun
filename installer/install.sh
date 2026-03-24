@@ -357,20 +357,16 @@ fi
 [[ -z "$NODE_ID" ]] && NODE_ID=$(gen_uuid)
 
 if [[ ! -f "$CONFIG_FILE" ]]; then
+  # Auto-generate provider key — no user input needed.
+  # The binary also auto-generates on first run, but we do it here too
+  # so the config file is complete from the start.
   if [[ -n "$CLI_KEY" ]]; then
-    # Key provided via CLI — skip interactive prompts
-    ok "API key provided via --key"
-    write_config "$NODE_ID" "$CLI_KEY" "${CLI_WALLET:-}" "${CLI_REFERRAL:-}"
+    API_KEY="$CLI_KEY"
   else
-    echo ""
-    echo -e "  ${CYAN}Get your provider key at https://owlrun.me — or skip and add it later.${RESET}"
-    echo -e "  Config file: $CONFIG_FILE"
-    echo ""
-    read -rp "  Provider key (press Enter to skip): " API_KEY
-    read -rp "  Lightning address for payouts (press Enter to skip): " WALLET
-    read -rp "  Referral code (press Enter to skip): " REFERRAL
-    write_config "$NODE_ID" "${API_KEY:-}" "${WALLET:-}" "${REFERRAL:-}"
+    API_KEY="owlr_prov_$(od -An -tx1 -N24 /dev/urandom | tr -d ' \n')"
   fi
+  ok "Provider key: $API_KEY"
+  write_config "$NODE_ID" "$API_KEY" "${CLI_WALLET:-}" "${CLI_REFERRAL:-}"
 else
   ok "Existing config preserved"
 fi

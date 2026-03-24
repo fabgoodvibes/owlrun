@@ -4,6 +4,8 @@
 package config
 
 import (
+	"crypto/rand"
+	"encoding/hex"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -127,11 +129,26 @@ func EnsureNodeID(cfg *Config) string {
 	cfg.Account.NodeID = id
 	// Best-effort persist — if it fails the node gets a new ID next restart,
 	// which is acceptable until the installer sets up the conf file properly.
-	persistNodeID(id)
+	persistKey("node_id", id)
 	return id
 }
 
-func persistNodeID(id string) {
+// EnsureAPIKey returns the provider API key from cfg, generating and persisting
+// a new owlr_prov_<48 hex chars> key if the config doesn't have one yet.
+// Normally bootstrap() handles this, but this is a safety net for existing
+// configs that were created before auto-generation was added.
+func EnsureAPIKey(cfg *Config) string {
+	if cfg.Account.APIKey != "" {
+		return cfg.Account.APIKey
+	}
+	key := generateAPIKey()
+	cfg.Account.APIKey = key
+	persistKey("api_key", key)
+	return key
+}
+
+// persistKey writes a single key to the [account] section of the config file.
+func persistKey(key, value string) {
 	path := Path()
 	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
 		return
@@ -140,7 +157,7 @@ func persistNodeID(id string) {
 	if err != nil {
 		f = ini.Empty()
 	}
-	f.Section("account").Key("node_id").SetValue(id)
+	f.Section("account").Key(key).SetValue(value)
 	_ = f.SaveTo(path)
 }
 
@@ -184,13 +201,59 @@ func Path() string {
 	return filepath.Join(home, ".owlrun", "owlrun.conf")
 }
 
+// generateAPIKey creates a new owlr_prov_<48 hex chars> provider key.
+func generateAPIKey() string {
+	b := make([]byte, 24)
+	if _, err := rand.Read(b); err != nil {
+		b = []byte(uuid.New().String() + uuid.New().String())[:24]
+	}
+	return "owlr_prov_" + hex.EncodeToString(b)
+}
+
+// bootstrap writes a fresh config file with defaults, a random node ID,
+// and a random provider API key. Called automatically when no config exists.
+func bootstrap(cfg *Config) {
+	cfg.Account.NodeID = uuid.New().String()
+	cfg.Account.APIKey = generateAPIKey()
+
+	path := Path()
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		return
+	}
+	f := ini.Empty()
+	sec := f.Section("account")
+	sec.Key("node_id").SetValue(cfg.Account.NodeID)
+	sec.Key("api_key").SetValue(cfg.Account.APIKey)
+
+	mkt := f.Section("marketplace")
+	mkt.Key("gateway").SetValue(cfg.Marketplace.Gateway)
+	mkt.Key("allow_override").SetValue("true")
+
+	inf := f.Section("inference")
+	inf.Key("model_auto").SetValue("true")
+	inf.Key("max_vram_pct").SetValue("80")
+
+	idl := f.Section("idle")
+	idl.Key("trigger_minutes").SetValue("10")
+	idl.Key("gpu_threshold").SetValue("15")
+	idl.Key("watch_processes").SetValue("true")
+
+	dsk := f.Section("disk")
+	dsk.Key("warn_threshold_pct").SetValue("30")
+	dsk.Key("min_model_space_gb").SetValue("8")
+
+	_ = f.SaveTo(path)
+}
+
 // Load reads owlrun.conf and returns a Config. If the file does not exist,
-// all defaults are used. Partial files are also safe — missing keys use defaults.
+// a default config is created with auto-generated node ID and provider key.
+// Partial files are also safe — missing keys use defaults.
 func Load() (Config, error) {
 	cfg := defaults()
 	path := Path()
 
 	if _, err := os.Stat(path); os.IsNotExist(err) {
+		bootstrap(&cfg)
 		return cfg, nil
 	}
 

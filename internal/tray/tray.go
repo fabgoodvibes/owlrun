@@ -84,6 +84,7 @@ type Agent struct {
 // Must be called from the main goroutine.
 func Run(cfg config.Config, dash *dashboard.Server) {
 	nodeID := config.EnsureNodeID(&cfg)
+	config.EnsureAPIKey(&cfg)
 	info := gpu.Detect()
 	monitor := gpu.NewMonitor(info, 10*time.Second)
 	tracker := earnings.New()
@@ -658,6 +659,7 @@ func (a *Agent) statusSnapshot() dashboard.Status {
 
 	var s dashboard.Status
 	s.NodeID = a.nodeID
+	s.ProviderKey = a.cfg.Account.APIKey
 	s.Version = buildinfo.Version
 	s.Network = buildinfo.Network
 	s.Wallet.Address = a.cfg.Account.Wallet

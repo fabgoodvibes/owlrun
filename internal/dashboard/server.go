@@ -22,9 +22,10 @@ import (
 
 // Status is the full snapshot returned by GET /api/status.
 type Status struct {
-	NodeID  string `json:"node_id"`
-	Version string `json:"version"`
-	Network string `json:"network"` // "beta" | "production"
+	NodeID      string `json:"node_id"`
+	ProviderKey string `json:"provider_key"`
+	Version     string `json:"version"`
+	Network     string `json:"network"` // "beta" | "production"
 	State       string `json:"state"`        // "earning" | "idle" | "paused" | "error"
 	ErrorDetail string `json:"error_detail,omitempty"` // user-facing error message when state=error
 
@@ -930,6 +931,7 @@ const dashboardHTML = `<!DOCTYPE html>
     <div class="card-title">Status</div>
     <div id="state-badge" class="state-badge">—</div>
     <div class="node-id" id="node-id"></div>
+    <div class="node-id" id="provider-key" style="cursor:pointer;user-select:all" title="Click to copy"></div>
     <div style="margin-top:10px;border-top:1px solid var(--border);padding-top:10px">
       <div id="models-section"></div>
     </div>
@@ -1116,6 +1118,18 @@ function update(d) {
   verEl.textContent = 'v' + d.version;
   verEl.style.cssText = 'opacity:0.7;font-weight:500;font-size:14px;background:var(--bg-card-hover);padding:2px 8px;border-radius:4px;border:1px solid var(--border);margin-left:4px';
   document.getElementById('node-id').textContent = 'node ' + d.node_id;
+
+  // Provider key (click to copy)
+  var pkEl = document.getElementById('provider-key');
+  if (d.provider_key) {
+    pkEl.textContent = 'key ' + d.provider_key;
+    pkEl.onclick = function() {
+      navigator.clipboard.writeText(d.provider_key).then(function() {
+        pkEl.textContent = 'copied!';
+        setTimeout(function() { pkEl.textContent = 'key ' + d.provider_key; }, 1500);
+      });
+    };
+  }
 
   // Network badge (beta/production)
   var nb = document.getElementById('network-badge');

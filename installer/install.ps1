@@ -280,20 +280,21 @@ $apiKey = ''
 $wallet = ''
 
 if (-not (Test-Path $CONFIG_FILE)) {
+  # Auto-generate provider key — no user input needed.
+  # The binary also auto-generates on first run, but we do it here too
+  # so the config file is complete from the start.
   if ($ApiKey) {
-    # Key provided via -ApiKey param — skip interactive prompts
-    Write-OK "API key provided via -ApiKey"
-    Write-DefaultConfig -NodeId $nodeId -ApiKey $ApiKey.Trim() -Wallet $Wallet.Trim() -ReferralCode $Referral.Trim()
+    $apiKey = $ApiKey.Trim()
   } else {
-    Write-Host ""
-    Write-Host "  Get your provider key at https://owlrun.me — or skip and add it later." -ForegroundColor DarkCyan
-    Write-Host "  Config file: $CONFIG_FILE" -ForegroundColor DarkGray
-    Write-Host ""
-    $apiKey   = Read-Host "  Provider key (press Enter to skip)"
-    $wallet   = Read-Host "  Lightning address for payouts (press Enter to skip)"
-    $referral = Read-Host "  Referral code (press Enter to skip)"
-    Write-DefaultConfig -NodeId $nodeId -ApiKey $apiKey.Trim() -Wallet $wallet.Trim() -ReferralCode $referral.Trim()
+    $bytes = New-Object byte[] 24
+    [System.Security.Cryptography.RandomNumberGenerator]::Create().GetBytes($bytes)
+    $apiKey = "owlr_prov_" + [BitConverter]::ToString($bytes).Replace('-','').ToLower()
   }
+  Write-OK "Provider key: $apiKey"
+
+  $wallet   = $Wallet.Trim()
+  $referral = $Referral.Trim()
+  Write-DefaultConfig -NodeId $nodeId -ApiKey $apiKey -Wallet $wallet -ReferralCode $referral
 } else {
   Write-OK "Existing config preserved at $CONFIG_FILE"
 }
