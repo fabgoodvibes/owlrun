@@ -28,8 +28,11 @@ var modelTable = []struct {
 	{"llama3.2:1b", 0},      // small enough for CPU
 	{"deepseek-r1:1.5b", 0}, // reasoning/math, runs on CPU
 	{"qwen2.5:1.5b", 0},     // runs well on CPU
+	{"tinyllama:1.1b", 0},   // 637MB, fast CPU inference
 	{"qwen3.5:0.8b", 0},     // ultra-light multimodal (Mar 2026)
 	{"qwen2.5:0.5b", 0},     // CPU-only fallback
+	{"smollm2:360m", 0},     // HuggingFace, 230MB, ultra-light
+	{"smollm2:135m", 0},     // HuggingFace, 270MB, smallest viable model
 }
 
 // RecommendModel returns the single best model tag for the available VRAM.
