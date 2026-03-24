@@ -91,7 +91,9 @@ func Run(cfg config.Config, dash *dashboard.Server) {
 			return stats.UtilizationPct, stats.VRAMFreeMB, stats.TemperatureC, stats.PowerDrawW
 		},
 		func(model string, tokens int, earnedUSD float64) {
-			tracker.Record(model, tokens, earnedUSD)
+			if err := tracker.Record(model, tokens, earnedUSD); err != nil {
+				log.Printf("owlrun: failed to record earnings: %v", err)
+			}
 		},
 		func() {
 			d.mu.Lock()

@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"log"
 	"net"
 	"net/http"
 	"strings"
@@ -250,9 +251,19 @@ func (s *Server) Start() error {
 	mux.HandleFunc("/api/pull-model", s.handlePullModel)
 	mux.HandleFunc("/api/model-size", s.handleModelSize)
 	mux.HandleFunc("/api/remove-model", s.handleRemoveModel)
-	ln, err := net.Listen("tcp", fmt.Sprintf("127.0.0.1:%d", s.port))
+	addr := fmt.Sprintf("127.0.0.1:%d", s.port)
+	ln, err := net.Listen("tcp", addr)
 	if err != nil {
-		return err
+		// Port likely held by a crashed previous instance (TIME_WAIT or zombie).
+		// Try SO_REUSEADDR via ListenConfig.
+		lc := net.ListenConfig{
+			Control: setReuseAddr,
+		}
+		ln, err = lc.Listen(context.Background(), "tcp", addr)
+		if err != nil {
+			log.Printf("owlrun: dashboard port %d unavailable: %v", s.port, err)
+			return err
+		}
 	}
 	go http.Serve(ln, mux) //nolint:errcheck
 	return nil
@@ -364,10 +375,10 @@ func (s *Server) handleSetLightningAddress(w http.ResponseWriter, r *http.Reques
 		return
 	}
 
-	// Basic Lightning address validation: must contain @
-	if !strings.Contains(req.Address, "@") {
+	// Lightning address validation: user@domain with valid parts.
+	if !isValidLightningAddress(req.Address) {
 		w.WriteHeader(http.StatusBadRequest)
-		json.NewEncoder(w).Encode(map[string]string{"error": "invalid Lightning address — expected format: user@domain"})
+		json.NewEncoder(w).Encode(map[string]string{"error": "invalid Lightning address — expected format: user@domain.tld"})
 		return
 	}
 
@@ -608,6 +619,31 @@ func (s *Server) handleModelSize(w http.ResponseWriter, r *http.Request) {
 		"size_mb": 0, // unknown — JS will use vram_gb * 1.5 * 1024
 		"source":  "estimate",
 	})
+}
+
+// isValidLightningAddress checks that addr is a well-formed user@domain.tld.
+func isValidLightningAddress(addr string) bool {
+	parts := strings.SplitN(addr, "@", 2)
+	if len(parts) != 2 {
+		return false
+	}
+	user, domain := parts[0], parts[1]
+	if user == "" || domain == "" {
+		return false
+	}
+	// Domain must have at least one dot, not start/end with dot, no consecutive dots.
+	if !strings.Contains(domain, ".") || strings.HasPrefix(domain, ".") || strings.HasSuffix(domain, ".") || strings.Contains(domain, "..") {
+		return false
+	}
+	// No spaces or control characters in either part.
+	if strings.ContainsAny(addr, " \t\n\r") {
+		return false
+	}
+	// Must not have multiple @ signs.
+	if strings.Count(addr, "@") != 1 {
+		return false
+	}
+	return true
 }
 
 func (s *Server) handleIndex(w http.ResponseWriter, r *http.Request) {

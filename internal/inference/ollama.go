@@ -20,6 +20,7 @@ import (
 	"log"
 	"net/http"
 	"os/exec"
+	"strings"
 	"sync"
 	"time"
 
@@ -68,14 +69,23 @@ func (m *Manager) Start() error {
 	defer m.mu.Unlock()
 
 	if m.cmd != nil {
+		log.Printf("owlrun: ollama cmd already set — reusing our subprocess")
 		return nil // we started it ourselves
 	}
 
 	// Check if Ollama is already running (service, manual start, etc).
-	if m.healthyUnlocked() {
-		log.Printf("owlrun: ollama already running on %s — reusing", ollamaHost)
-		return nil
+	// Retry a few times since a system service may still be starting.
+	for i := 0; i < 3; i++ {
+		if m.healthyUnlocked() {
+			log.Printf("owlrun: ollama already running on %s — reusing", ollamaHost)
+			return nil
+		}
+		if i < 2 {
+			time.Sleep(2 * time.Second)
+		}
 	}
+
+	log.Printf("owlrun: ollama not detected, attempting to start")
 
 	ollamaPath, err := findOllama()
 	if err != nil {
@@ -152,21 +162,30 @@ func (m *Manager) ListInstalled() []string {
 	req, _ := http.NewRequestWithContext(ctx, http.MethodGet, ollamaHost+"/api/tags", nil)
 	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
+		log.Printf("owlrun: list models failed: %v", err)
 		return nil
 	}
 	defer resp.Body.Close()
 
 	var payload struct {
 		Models []struct {
-			Name string `json:"name"`
+			Name  string `json:"name"`
+			Model string `json:"model"`
 		} `json:"models"`
 	}
 	if err := json.NewDecoder(resp.Body).Decode(&payload); err != nil {
+		log.Printf("owlrun: list models decode failed: %v", err)
 		return nil
 	}
 	out := make([]string, 0, len(payload.Models))
 	for _, m := range payload.Models {
-		out = append(out, m.Name)
+		name := m.Name
+		if name == "" {
+			name = m.Model // fallback for newer Ollama versions
+		}
+		if name != "" {
+			out = append(out, name)
+		}
 	}
 	return out
 }
@@ -180,14 +199,24 @@ func (m *Manager) SelectModel(vramGB float64, maxVRAMPct int) (string, []string)
 	installed := m.ListInstalled()
 
 	installedSet := make(map[string]bool, len(installed))
+	normalizedToActual := make(map[string]string, len(installed))
 	for _, name := range installed {
 		installedSet[name] = true
+		normalizedToActual[normalizeModelName(name)] = name
 	}
 
 	for _, candidate := range ranked {
 		if installedSet[candidate] {
 			return candidate, nil
 		}
+		if actual, ok := normalizedToActual[normalizeModelName(candidate)]; ok {
+			return actual, nil
+		}
+	}
+
+	// CPU fallback
+	if vramGB == 0 && len(installed) > 0 {
+		return installed[0], nil
 	}
 	return "", ranked
 }
@@ -200,21 +229,53 @@ func (m *Manager) SelectModels(vramGB float64, maxVRAMPct int) ([]string, []stri
 	ranked := gpu.RankedModels(vramGB, maxVRAMPct)
 	installed := m.ListInstalled()
 
+	if len(installed) == 0 {
+		log.Printf("owlrun: no models returned from ollama /api/tags")
+		return nil, ranked
+	}
+	log.Printf("owlrun: installed models: %v", installed)
+
+	// Build lookup sets — exact match + normalized (strip :latest).
 	installedSet := make(map[string]bool, len(installed))
+	normalizedToActual := make(map[string]string, len(installed))
 	for _, name := range installed {
 		installedSet[name] = true
+		normalizedToActual[normalizeModelName(name)] = name
 	}
 
 	var matched []string
+	seen := make(map[string]bool)
 	for _, candidate := range ranked {
+		actual := ""
 		if installedSet[candidate] {
-			matched = append(matched, candidate)
+			actual = candidate
+		} else if a, ok := normalizedToActual[normalizeModelName(candidate)]; ok {
+			actual = a
+		}
+		if actual != "" && !seen[actual] {
+			matched = append(matched, actual)
+			seen[actual] = true
 		}
 	}
+
+	// CPU fallback: when vramGB==0 (no GPU), any installed model can run.
+	// Use installed models not already matched, preserving ranked order first.
+	if len(matched) == 0 && vramGB == 0 && len(installed) > 0 {
+		log.Printf("owlrun: no table matches — CPU fallback, using all installed models")
+		matched = installed
+	}
+
 	if len(matched) == 0 {
 		return nil, ranked
 	}
 	return matched, nil
+}
+
+// normalizeModelName strips the :latest tag and lowercases for fuzzy matching.
+func normalizeModelName(name string) string {
+	name = strings.ToLower(strings.TrimSpace(name))
+	name = strings.TrimSuffix(name, ":latest")
+	return name
 }
 
 // DeleteModel removes a model from Ollama via DELETE /api/delete.

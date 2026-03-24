@@ -90,19 +90,21 @@ func (t *Tracker) Get() Snapshot {
 }
 
 // Record persists a completed job. Safe to call when db is nil.
-func (t *Tracker) Record(model string, tokens int, earned float64) {
+// Returns an error if the INSERT fails so callers can handle it.
+func (t *Tracker) Record(model string, tokens int, earned float64) error {
 	t.mu.Lock()
 	defer t.mu.Unlock()
 
 	if t.db == nil {
-		return
+		return fmt.Errorf("earnings: database not available")
 	}
 	if _, err := t.db.Exec(
 		`INSERT INTO jobs(ts, model, tokens, earned) VALUES (?,?,?,?)`,
 		time.Now().UTC().Unix(), model, tokens, earned,
 	); err != nil {
-		log.Printf("owlrun: earnings record: %v", err)
+		return fmt.Errorf("earnings: record job: %w", err)
 	}
+	return nil
 }
 
 // HistoryBucket is one time-bucketed aggregation of jobs.

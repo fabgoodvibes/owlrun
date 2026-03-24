@@ -85,7 +85,7 @@ func (w *Wallet) Claim(amountSats int64) (string, error) {
 	}
 
 	if err := w.store.Save(mintURL, proofs); err != nil {
-		log.Printf("owlrun: wallet: failed to save proofs locally: %v", err)
+		return cr.Token, fmt.Errorf("wallet: proofs claimed but local save failed (token preserved): %w", err)
 	}
 
 	// Compute actual sats from token.
@@ -130,9 +130,13 @@ func (w *Wallet) AutoClaim(gatewaySats int64) {
 	token, err := w.Claim(0) // 0 = claim all
 	if err != nil {
 		log.Printf("owlrun: wallet: auto-claim failed: %v", err)
+		if token != "" {
+			// Token was claimed from gateway but local save failed.
+			// Log for manual recovery — this is real money.
+			log.Printf("owlrun: wallet: RECOVERY TOKEN (paste into Minibits): %s", token)
+		}
 		return
 	}
-	_ = token // stored internally by Claim
 }
 
 // LastToken returns the most recent cashuA token from a claim.
