@@ -81,12 +81,13 @@ func New(
 	return r
 }
 
-// SetModel updates the connector with the currently loaded Ollama model tag
-// and rebuilds the registration payload so the gateway sees the correct model list.
-func (r *Router) SetModel(model string) {
-	r.conn.SetModel(model)
+// SetModels updates the connector with all models this node can serve and
+// rebuilds the registration payload. The first model is the primary (loaded
+// into VRAM); the rest are available for on-demand loading.
+func (r *Router) SetModels(models []string) {
+	r.conn.SetModels(models)
 
-	payload, err := BuildRegistration(r.nodeID, r.apiKey, r.wallet, r.referralCode, r.lightningAddress, r.redeemThreshold, r.region, r.version, r.gpuInfo, []string{model})
+	payload, err := BuildRegistration(r.nodeID, r.apiKey, r.wallet, r.referralCode, r.lightningAddress, r.redeemThreshold, r.region, r.version, r.gpuInfo, models)
 	if err != nil {
 		log.Printf("owlrun: gateway: rebuild registration payload: %v", err)
 		return
@@ -94,19 +95,17 @@ func (r *Router) SetModel(model string) {
 	r.conn.SetRegistration(payload)
 }
 
+// SetModel updates the connector with a single model (convenience wrapper).
+func (r *Router) SetModel(model string) {
+	r.SetModels([]string{model})
+}
+
 // SetLightningAddress updates the provider's Lightning address and re-registers
 // with the gateway so it knows where to send auto-payouts.
 func (r *Router) SetLightningAddress(addr string) {
 	r.lightningAddress = addr
-	// Rebuild registration with the current model.
-	r.conn.mu.RLock()
-	model := r.conn.model
-	r.conn.mu.RUnlock()
-
-	var models []string
-	if model != "" {
-		models = []string{model}
-	}
+	// Rebuild registration with all current models.
+	models := r.currentModels()
 	payload, err := BuildRegistration(r.nodeID, r.apiKey, r.wallet, r.referralCode, r.lightningAddress, r.redeemThreshold, r.region, r.version, r.gpuInfo, models)
 	if err != nil {
 		log.Printf("owlrun: gateway: rebuild registration (lightning address): %v", err)
@@ -120,14 +119,7 @@ func (r *Router) SetLightningAddress(addr string) {
 // SetRedeemThreshold updates the payout threshold (sats) and re-registers.
 func (r *Router) SetRedeemThreshold(threshold int) {
 	r.redeemThreshold = threshold
-	r.conn.mu.RLock()
-	model := r.conn.model
-	r.conn.mu.RUnlock()
-
-	var models []string
-	if model != "" {
-		models = []string{model}
-	}
+	models := r.currentModels()
 	payload, err := BuildRegistration(r.nodeID, r.apiKey, r.wallet, r.referralCode, r.lightningAddress, r.redeemThreshold, r.region, r.version, r.gpuInfo, models)
 	if err != nil {
 		log.Printf("owlrun: gateway: rebuild registration (redeem threshold): %v", err)
@@ -138,6 +130,17 @@ func (r *Router) SetRedeemThreshold(threshold int) {
 	go r.conn.Reconnect()
 }
 
+// currentModels returns the list of registered model tags from the connector.
+func (r *Router) currentModels() []string {
+	r.conn.mu.RLock()
+	defer r.conn.mu.RUnlock()
+	models := make([]string, 0, len(r.conn.models))
+	for tag := range r.conn.models {
+		models = append(models, tag)
+	}
+	return models
+}
+
 // Connect starts the gateway WS lifecycle. Non-blocking.
 func (r *Router) Connect() {
 	r.conn.Connect()
@@ -146,6 +149,11 @@ func (r *Router) Connect() {
 // Disconnect tears down the gateway connection cleanly.
 func (r *Router) Disconnect() {
 	r.conn.Disconnect()
+}
+
+// Reconnect drops the WS and reconnects with updated registration.
+func (r *Router) Reconnect() {
+	r.conn.Reconnect()
 }
 
 // Stats returns the latest heartbeat_ack data from the gateway.

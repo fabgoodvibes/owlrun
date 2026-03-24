@@ -9,6 +9,40 @@ import (
 	"testing"
 )
 
+func TestIsValidLightningAddress(t *testing.T) {
+	valid := []string{
+		"user@walletofsatoshi.com",
+		"fabio@getalby.com",
+		"test@domain.co.uk",
+		"a@b.c",
+	}
+	for _, addr := range valid {
+		if !isValidLightningAddress(addr) {
+			t.Errorf("isValidLightningAddress(%q) = false, want true", addr)
+		}
+	}
+
+	invalid := []string{
+		"",
+		"@",
+		"user@",
+		"@domain.com",
+		"nodomain",
+		"user@@domain.com",
+		"user@domain",      // no TLD dot
+		"user@.com",        // empty subdomain
+		"user@domain..com", // consecutive dots
+		"user @domain.com", // space
+		"user\t@domain.com",
+		"user\n@domain.com",
+	}
+	for _, addr := range invalid {
+		if isValidLightningAddress(addr) {
+			t.Errorf("isValidLightningAddress(%q) = true, want false", addr)
+		}
+	}
+}
+
 // freePort returns an available localhost port.
 func freePort(t *testing.T) int {
 	t.Helper()

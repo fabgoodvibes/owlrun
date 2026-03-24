@@ -23,8 +23,7 @@ const (
 	reconnectDelayInit  = 1 * time.Second
 	reconnectDelayMax   = 30 * time.Second
 	wsPath              = "/v1/gateway/ws"
-	jobFetchPath  = "/v1/gateway/jobs/%s/proxy/request"
-	jobSubmitPath = "/v1/gateway/jobs/%s/proxy/response"
+	jobFetchPath = "/v1/gateway/jobs/%s/proxy/request"
 )
 
 // StatsFunc is called by the connector to get live GPU stats for heartbeats.
@@ -47,11 +46,16 @@ type GatewayStats struct {
 	JobsToday        int
 	TokensToday      int
 	EarnedTodayUSD   float64
+	EarnedTodaySats  int64
+	EarnedTotalSats  int64
 	QueueDepthGlobal int
 	BtcPrice         BtcPrice
 	Broadcasts       []Broadcast
 	BalanceSats      int64
-	ModelPricing     *ModelPricing
+	Models           []string                    // all registered model tags
+	ModelPricing     *ModelPricing               // primary model (backward compat)
+	AllModelPricing  map[string]*ModelPricing     // pricing per model
+	WithdrawHistory  []WithdrawRecord            // last N Lightning payouts from gateway
 }
 
 // wsMsg is the generic WebSocket message envelope used for all control traffic.
@@ -78,6 +82,8 @@ type wsMsg struct {
 	JobsToday        int     `json:"jobs_today,omitempty"`
 	TokensToday      int     `json:"tokens_today,omitempty"`
 	EarnedTodayUSD   float64 `json:"earned_today_usd,omitempty"`
+	EarnedTodaySats  int64   `json:"earned_today_sats,omitempty"`
+	EarnedTotalSats  int64   `json:"earned_total_sats,omitempty"`
 	QueueDepthGlobal int     `json:"queue_depth_global,omitempty"`
 	BtcLiveUsd       float64 `json:"btc_live_usd,omitempty"`
 	BtcYesterdayFix  float64 `json:"btc_yesterday_fix,omitempty"`
@@ -93,14 +99,30 @@ type wsMsg struct {
 	// Reject (node → gateway)
 	Reason string `json:"reason,omitempty"`
 
+	// Proxy streaming (node → gateway, WS proxy)
+	Data string `json:"data,omitempty"` // Ollama response chunk (UTF-8)
+
 	// Broadcasts (gateway → node, in heartbeat_ack)
 	Broadcasts []Broadcast `json:"broadcasts,omitempty"`
+
+	// Withdraw history (gateway → node, in heartbeat_ack)
+	WithdrawHistory []WithdrawRecord `json:"withdraw_history,omitempty"`
 }
 
 // Broadcast is a gateway notification message.
 type Broadcast struct {
+	ID        string `json:"id"`
+	Title     string `json:"title"`
 	Message   string `json:"message"`
-	Timestamp string `json:"timestamp"`
+	Severity  string `json:"severity"`
+	Timestamp string `json:"created_at"`
+}
+
+// WithdrawRecord is a Lightning payout sent by the gateway auto-redeemer.
+type WithdrawRecord struct {
+	AmountSats  int64  `json:"amount_sats"`
+	PaymentHash string `json:"payment_hash"`
+	Timestamp   string `json:"timestamp"`
 }
 
 
@@ -137,12 +159,13 @@ type Connector struct {
 	// Override in tests to point at a fake Ollama server.
 	ollamaBase string
 
-	mu           sync.RWMutex
-	model        string       // currently loaded Ollama model
-	conn         *websocket.Conn
-	gatewayStats GatewayStats
-	modelPricing *ModelPricing // fetched from /v1/models, persists across heartbeats
-	queueDepth   int
+	mu              sync.RWMutex
+	models          map[string]bool            // all registered models (set for O(1) lookup)
+	conn            *websocket.Conn
+	gatewayStats    GatewayStats
+	modelPricing    *ModelPricing              // primary model pricing (backward compat)
+	allModelPricing map[string]*ModelPricing   // pricing for all registered models
+	queueDepth      int
 
 	cancelFn context.CancelFunc
 	running  bool
@@ -202,11 +225,20 @@ func (c *Connector) SetRegistration(payload []byte) {
 	c.mu.Unlock()
 }
 
-// SetModel updates the currently loaded Ollama model tag.
-func (c *Connector) SetModel(model string) {
+// SetModels updates the set of models this node can serve.
+func (c *Connector) SetModels(models []string) {
+	m := make(map[string]bool, len(models))
+	for _, tag := range models {
+		m[tag] = true
+	}
 	c.mu.Lock()
-	c.model = model
+	c.models = m
 	c.mu.Unlock()
+}
+
+// SetModel updates a single model (convenience wrapper for SetModels).
+func (c *Connector) SetModel(model string) {
+	c.SetModels([]string{model})
 }
 
 // GatewayStats returns the latest heartbeat_ack snapshot from the gateway.
@@ -215,6 +247,12 @@ func (c *Connector) Stats() GatewayStats {
 	defer c.mu.RUnlock()
 	s := c.gatewayStats
 	s.ModelPricing = c.modelPricing
+	s.AllModelPricing = c.allModelPricing
+	// Build models list from the set.
+	s.Models = make([]string, 0, len(c.models))
+	for tag := range c.models {
+		s.Models = append(s.Models, tag)
+	}
 	return s
 }
 
@@ -346,9 +384,13 @@ func (c *Connector) register(ctx context.Context) error {
 // and silently ignored.
 func (c *Connector) fetchModelPricing(ctx context.Context) {
 	c.mu.RLock()
-	model := c.model
+	// Grab all registered model tags for pricing lookup.
+	var modelTags []string
+	for tag := range c.models {
+		modelTags = append(modelTags, tag)
+	}
 	c.mu.RUnlock()
-	if model == "" {
+	if len(modelTags) == 0 {
 		return
 	}
 
@@ -377,14 +419,28 @@ func (c *Connector) fetchModelPricing(ctx context.Context) {
 		return
 	}
 
+	// Collect pricing for all registered models.
+	registered := make(map[string]bool, len(modelTags))
+	for _, t := range modelTags {
+		registered[t] = true
+	}
+	allPricing := make(map[string]*ModelPricing)
+	var primary *ModelPricing
 	for _, m := range result.Data {
-		if m.ID == model && m.Pricing != nil {
-			c.mu.Lock()
-			c.modelPricing = m.Pricing
-			c.mu.Unlock()
-			log.Printf("owlrun: gateway: model %s pricing: $%.3f/$%.3f per M tokens (in/out)", model, m.Pricing.PerMInputUSD, m.Pricing.PerMOutputUSD)
-			return
+		if registered[m.ID] && m.Pricing != nil {
+			p := *m.Pricing // copy
+			allPricing[m.ID] = &p
+			if primary == nil {
+				primary = &p
+			}
+			log.Printf("owlrun: gateway: model %s pricing: $%.3f/$%.3f per M tokens (in/out)", m.ID, m.Pricing.PerMInputUSD, m.Pricing.PerMOutputUSD)
 		}
+	}
+	if len(allPricing) > 0 {
+		c.mu.Lock()
+		c.modelPricing = primary
+		c.allModelPricing = allPricing
+		c.mu.Unlock()
 	}
 }
 
@@ -485,6 +541,8 @@ func (c *Connector) readLoop(ctx context.Context, conn *websocket.Conn) error {
 				JobsToday:        msg.JobsToday,
 				TokensToday:      msg.TokensToday,
 				EarnedTodayUSD:   msg.EarnedTodayUSD,
+				EarnedTodaySats:  msg.EarnedTodaySats,
+				EarnedTotalSats:  msg.EarnedTotalSats,
 				QueueDepthGlobal: msg.QueueDepthGlobal,
 				BtcPrice: BtcPrice{
 					LiveUsd:    msg.BtcLiveUsd,
@@ -495,6 +553,7 @@ func (c *Connector) readLoop(ctx context.Context, conn *websocket.Conn) error {
 				},
 				Broadcasts:       msg.Broadcasts,
 				BalanceSats:      msg.BalanceSats,
+				WithdrawHistory:  msg.WithdrawHistory,
 			}
 			c.mu.Unlock()
 			if c.onBalanceUpdate != nil && msg.BalanceSats > 0 {
@@ -504,9 +563,15 @@ func (c *Connector) readLoop(ctx context.Context, conn *websocket.Conn) error {
 			go c.handleJob(ctx, conn, msg)
 		case "job_complete":
 			if c.onComplete != nil {
-				c.mu.RLock()
-				model := c.model
-				c.mu.RUnlock()
+				model := msg.Model
+				if model == "" {
+					c.mu.RLock()
+					for m := range c.models {
+						model = m
+						break
+					}
+					c.mu.RUnlock()
+				}
 				c.onComplete(model, msg.Tokens, msg.EarnedUSD)
 			}
 		case "drain":
@@ -519,15 +584,15 @@ func (c *Connector) readLoop(ctx context.Context, conn *websocket.Conn) error {
 // handleJob evaluates a job assignment and accepts or rejects it.
 func (c *Connector) handleJob(ctx context.Context, conn *websocket.Conn, job wsMsg) {
 	c.mu.RLock()
-	model := c.model
+	hasModel := c.models[job.Model]
 	_, vramFree, _, _ := c.getStats()
 	c.mu.RUnlock()
 
-	// Reject if the required model isn't loaded or there isn't enough VRAM.
+	// Reject if the required model isn't registered or there isn't enough VRAM.
 	vramInsufficient := vramFree > 0 && job.VRAMRequiredMB > 0 && vramFree < job.VRAMRequiredMB
-	if model != job.Model || vramInsufficient {
+	if !hasModel || vramInsufficient {
 		reason := "model_not_loaded"
-		if model == job.Model {
+		if hasModel {
 			reason = "no_vram"
 		}
 		_ = wsjson.Write(ctx, conn, wsMsg{
@@ -558,29 +623,23 @@ func (c *Connector) handleJob(ctx context.Context, conn *websocket.Conn, job wsM
 			c.queueDepth--
 			c.mu.Unlock()
 		}()
-		if err := c.proxyJob(ctx, job.JobID); err != nil {
+		if err := c.proxyJob(ctx, conn, job.JobID); err != nil {
 			log.Printf("owlrun: gateway: proxy job %s: %v", job.JobID, err)
 		}
 	}()
 }
 
-// proxyJob claims the job from the gateway using Option A (two-request protocol):
+// proxyJob claims the job from the gateway and streams Ollama's response:
 //
 //  1. GET /v1/gateway/jobs/{job_id}/proxy/request  → receive buyer's request body.
 //     Gateway handler returns immediately → HTTP/2 END_STREAM → clean EOF.
 //  2. Forward buyer's request to local Ollama.
-//  3. POST /v1/gateway/jobs/{job_id}/proxy/response with Ollama's streaming response.
-//     Gateway pipes the POST body to the waiting buyer.
-//
-// This avoids the HTTP/2 full-duplex deadlock where Do() blocked forever on
-// writeLoopDone because the request body (the response body of step 1) could
-// only reach EOF when the gateway handler returned — which required the node to
-// finish writing — circular dependency.
-func (c *Connector) proxyJob(ctx context.Context, jobID string) error {
+//  3. Stream Ollama's response as WS proxy_chunk messages → gateway → buyer.
+//     Send proxy_done when stream ends. CF tunnel handles WS natively — no buffering.
+func (c *Connector) proxyJob(ctx context.Context, conn *websocket.Conn, jobID string) error {
 	base := c.proxyBaseURL()
 
 	// Step 1: GET buyer's request from gateway.
-	// Gateway handler returns immediately → END_STREAM → clean EOF on getResp.Body.
 	fetchURL := fmt.Sprintf(base+jobFetchPath, jobID)
 	getReq, err := http.NewRequestWithContext(ctx, http.MethodGet, fetchURL, nil)
 	if err != nil {
@@ -600,7 +659,6 @@ func (c *Connector) proxyJob(ctx context.Context, jobID string) error {
 		return fmt.Errorf("proxy fetch: HTTP %d: %s", getResp.StatusCode, snippet)
 	}
 
-	// Read buyer's request (clean EOF since GET handler returned).
 	buyerBody, err := io.ReadAll(getResp.Body)
 	if err != nil {
 		return fmt.Errorf("proxy fetch read: %w", err)
@@ -628,38 +686,39 @@ func (c *Connector) proxyJob(ctx context.Context, jobID string) error {
 		return fmt.Errorf("ollama: HTTP %d: %s", ollamaResp.StatusCode, snippet)
 	}
 
-	// Step 3: POST Ollama's response to gateway, which pipes it to the buyer.
-	// pr/pw pipe: Ollama's response flows ollamaResp.Body → pw → pr → gateway POST body.
-	// The POST request body (pr) is a local Go pipe — writeLoopDone closes when Ollama
-	// finishes and pw.Close() is called, so Do() returns cleanly. No deadlock.
-	pr, pw := io.Pipe()
-	defer pr.Close()
-
-	go func() {
-		_, copyErr := io.Copy(pw, ollamaResp.Body)
-		pw.CloseWithError(copyErr)
-	}()
-
-	submitURL := fmt.Sprintf(base+jobSubmitPath, jobID)
-	postReq, err := http.NewRequestWithContext(ctx, http.MethodPost, submitURL, pr)
-	if err != nil {
-		return err
+	// Step 3: Stream Ollama's response as WS proxy_chunk messages.
+	// Each chunk is a WS text message with job_id + data. Gateway writes each
+	// chunk to the buyer's ResponseWriter + Flush(). CF tunnel handles WS
+	// natively — zero buffering, real-time token streaming.
+	log.Printf("owlrun: gateway: job %s streaming response via WS", jobID)
+	buf := make([]byte, 4096)
+	for {
+		n, readErr := ollamaResp.Body.Read(buf)
+		if n > 0 {
+			if writeErr := wsjson.Write(ctx, conn, wsMsg{
+				Type:  "proxy_chunk",
+				JobID: jobID,
+				Data:  string(buf[:n]),
+			}); writeErr != nil {
+				return fmt.Errorf("proxy chunk write: %w", writeErr)
+			}
+		}
+		if readErr == io.EOF {
+			break
+		}
+		if readErr != nil {
+			return fmt.Errorf("ollama read: %w", readErr)
+		}
 	}
-	postReq.Header.Set("Authorization", "Bearer "+c.apiKey)
-	postReq.Header.Set("Content-Type", "application/json")
 
-	log.Printf("owlrun: gateway: job %s streaming response", jobID)
-	postResp, err := c.gwClient().Do(postReq)
-	log.Printf("owlrun: gateway: job %s proxy submit: err=%v", jobID, err)
-	if err != nil {
-		return fmt.Errorf("proxy submit: %w", err)
+	// Signal stream complete.
+	if err := wsjson.Write(ctx, conn, wsMsg{
+		Type:  "proxy_done",
+		JobID: jobID,
+	}); err != nil {
+		return fmt.Errorf("proxy done write: %w", err)
 	}
-	defer postResp.Body.Close()
 
-	if postResp.StatusCode != http.StatusOK {
-		snippet, _ := io.ReadAll(io.LimitReader(postResp.Body, 512))
-		return fmt.Errorf("proxy submit: HTTP %d: %s", postResp.StatusCode, snippet)
-	}
-	log.Printf("owlrun: gateway: job %s complete", jobID)
+	log.Printf("owlrun: gateway: job %s complete (WS proxy)", jobID)
 	return nil
 }

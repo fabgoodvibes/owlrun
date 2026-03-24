@@ -17,8 +17,10 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"log"
 	"net/http"
 	"os/exec"
+	"strings"
 	"sync"
 	"time"
 
@@ -60,14 +62,30 @@ func (m *Manager) EnsureInstalled() error {
 }
 
 // Start launches "ollama serve" and blocks until the API is healthy or the
-// timeout elapses. Returns an error if it fails to start.
+// timeout elapses. If Ollama is already running (e.g. as a Windows service
+// or user-started instance), skips launching and reuses the existing process.
 func (m *Manager) Start() error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
 	if m.cmd != nil {
-		return nil // already running
+		log.Printf("owlrun: ollama cmd already set — reusing our subprocess")
+		return nil // we started it ourselves
 	}
+
+	// Check if Ollama is already running (service, manual start, etc).
+	// Retry a few times since a system service may still be starting.
+	for i := 0; i < 3; i++ {
+		if m.healthyUnlocked() {
+			log.Printf("owlrun: ollama already running on %s — reusing", ollamaHost)
+			return nil
+		}
+		if i < 2 {
+			time.Sleep(2 * time.Second)
+		}
+	}
+
+	log.Printf("owlrun: ollama not detected, attempting to start")
 
 	ollamaPath, err := findOllama()
 	if err != nil {
@@ -77,6 +95,12 @@ func (m *Manager) Start() error {
 	cmd := exec.Command(ollamaPath, "serve")
 	cmd.Env = ollamaEnv(m.gpuInfo) // platform-specific GPU env vars
 	if err := cmd.Start(); err != nil {
+		// Start failed — but Ollama might have become healthy in the
+		// meantime (race with a service starting up). Check once more.
+		if m.healthyUnlocked() {
+			log.Printf("owlrun: ollama already running on %s — reusing", ollamaHost)
+			return nil
+		}
 		return fmt.Errorf("start ollama serve: %w", err)
 	}
 	m.cmd = cmd
@@ -138,21 +162,30 @@ func (m *Manager) ListInstalled() []string {
 	req, _ := http.NewRequestWithContext(ctx, http.MethodGet, ollamaHost+"/api/tags", nil)
 	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
+		log.Printf("owlrun: list models failed: %v", err)
 		return nil
 	}
 	defer resp.Body.Close()
 
 	var payload struct {
 		Models []struct {
-			Name string `json:"name"`
+			Name  string `json:"name"`
+			Model string `json:"model"`
 		} `json:"models"`
 	}
 	if err := json.NewDecoder(resp.Body).Decode(&payload); err != nil {
+		log.Printf("owlrun: list models decode failed: %v", err)
 		return nil
 	}
 	out := make([]string, 0, len(payload.Models))
 	for _, m := range payload.Models {
-		out = append(out, m.Name)
+		name := m.Name
+		if name == "" {
+			name = m.Model // fallback for newer Ollama versions
+		}
+		if name != "" {
+			out = append(out, name)
+		}
 	}
 	return out
 }
@@ -166,16 +199,105 @@ func (m *Manager) SelectModel(vramGB float64, maxVRAMPct int) (string, []string)
 	installed := m.ListInstalled()
 
 	installedSet := make(map[string]bool, len(installed))
+	normalizedToActual := make(map[string]string, len(installed))
 	for _, name := range installed {
 		installedSet[name] = true
+		normalizedToActual[normalizeModelName(name)] = name
 	}
 
 	for _, candidate := range ranked {
 		if installedSet[candidate] {
 			return candidate, nil
 		}
+		if actual, ok := normalizedToActual[normalizeModelName(candidate)]; ok {
+			return actual, nil
+		}
+	}
+
+	// CPU fallback
+	if vramGB == 0 && len(installed) > 0 {
+		return installed[0], nil
 	}
 	return "", ranked
+}
+
+// SelectModels returns ALL installed models that fit in VRAM, best first.
+// The first element is the primary model (loaded into VRAM). Others are
+// registered with the gateway so it can route multiple model requests.
+// Returns (models, nil) if at least one found, or (nil, suggestions).
+func (m *Manager) SelectModels(vramGB float64, maxVRAMPct int) ([]string, []string) {
+	ranked := gpu.RankedModels(vramGB, maxVRAMPct)
+	installed := m.ListInstalled()
+
+	if len(installed) == 0 {
+		log.Printf("owlrun: no models returned from ollama /api/tags")
+		return nil, ranked
+	}
+	log.Printf("owlrun: installed models: %v", installed)
+
+	// Build lookup sets — exact match + normalized (strip :latest).
+	installedSet := make(map[string]bool, len(installed))
+	normalizedToActual := make(map[string]string, len(installed))
+	for _, name := range installed {
+		installedSet[name] = true
+		normalizedToActual[normalizeModelName(name)] = name
+	}
+
+	var matched []string
+	seen := make(map[string]bool)
+	for _, candidate := range ranked {
+		actual := ""
+		if installedSet[candidate] {
+			actual = candidate
+		} else if a, ok := normalizedToActual[normalizeModelName(candidate)]; ok {
+			actual = a
+		}
+		if actual != "" && !seen[actual] {
+			matched = append(matched, actual)
+			seen[actual] = true
+		}
+	}
+
+	// CPU fallback: when vramGB==0 (no GPU), any installed model can run.
+	// Use installed models not already matched, preserving ranked order first.
+	if len(matched) == 0 && vramGB == 0 && len(installed) > 0 {
+		log.Printf("owlrun: no table matches — CPU fallback, using all installed models")
+		matched = installed
+	}
+
+	if len(matched) == 0 {
+		return nil, ranked
+	}
+	return matched, nil
+}
+
+// normalizeModelName strips the :latest tag and lowercases for fuzzy matching.
+func normalizeModelName(name string) string {
+	name = strings.ToLower(strings.TrimSpace(name))
+	name = strings.TrimSuffix(name, ":latest")
+	return name
+}
+
+// DeleteModel removes a model from Ollama via DELETE /api/delete.
+func (m *Manager) DeleteModel(modelTag string) error {
+	body, _ := json.Marshal(map[string]string{"name": modelTag})
+	ctx, cancel := context.WithTimeout(context.Background(), healthTimeout)
+	defer cancel()
+	req, err := http.NewRequestWithContext(ctx, http.MethodDelete, ollamaHost+"/api/delete", bytes.NewReader(body))
+	if err != nil {
+		return err
+	}
+	req.Header.Set("Content-Type", "application/json")
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		return fmt.Errorf("delete model: %w", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		b, _ := io.ReadAll(resp.Body)
+		return fmt.Errorf("delete model: HTTP %d: %s", resp.StatusCode, b)
+	}
+	return nil
 }
 
 // ModelInstalled reports whether the given tag already exists locally.

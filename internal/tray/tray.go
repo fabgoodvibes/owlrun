@@ -48,8 +48,9 @@ const (
 type Agent struct {
 	mu             sync.Mutex
 	state          State
-	manuallyPaused bool // true = user explicitly paused; overrides idle monitor
-	starting       bool // true = Ollama startup goroutine is in progress
+	errorDetail    string // user-facing error message when state=StateError
+	manuallyPaused bool   // true = user explicitly paused; overrides idle monitor
+	starting       bool   // true = Ollama startup goroutine is in progress
 	model          string // currently loaded Ollama model tag
 	jobMode        string // "never", "idle", "always"
 	cfg            config.Config
@@ -119,7 +120,9 @@ func Run(cfg config.Config, dash *dashboard.Server) {
 			return stats.UtilizationPct, stats.VRAMFreeMB, stats.TemperatureC, stats.PowerDrawW
 		},
 		func(model string, tokens int, earnedUSD float64) {
-			tracker.Record(model, tokens, earnedUSD)
+			if err := tracker.Record(model, tokens, earnedUSD); err != nil {
+				log.Printf("owlrun: failed to record earnings: %v", err)
+			}
 		},
 		func() {
 			a.mu.Lock()
@@ -217,6 +220,57 @@ func (a *Agent) onReady() {
 			a.mu.Unlock()
 			a.gateway.SetRedeemThreshold(threshold)
 			return nil
+		})
+		a.dash.SetModelSwitcher(func(model string) error {
+			if !a.ollamaMgr.ModelInstalled(model) {
+				return fmt.Errorf("model %s not installed — download it first", model)
+			}
+			log.Printf("owlrun: switching primary model to %s", model)
+			if err := a.ollamaMgr.LoadModel(model); err != nil {
+				return fmt.Errorf("failed to load model: %w", err)
+			}
+			a.mu.Lock()
+			a.model = model
+			a.mu.Unlock()
+			// Re-register with all installed models, new primary first.
+			models, _ := a.ollamaMgr.SelectModels(a.gpuInfo.VRAMTotalGB, a.cfg.Inference.MaxVRAMPct)
+			a.gateway.SetModels(models)
+			go a.gateway.Reconnect()
+			return nil
+		})
+		a.dash.SetModelRemover(func(model string) error {
+			a.mu.Lock()
+			active := a.model
+			a.mu.Unlock()
+			if model == active {
+				return fmt.Errorf("cannot remove the active model — switch to another first")
+			}
+			if err := a.ollamaMgr.DeleteModel(model); err != nil {
+				return err
+			}
+			log.Printf("owlrun: removed model %s", model)
+			models, _ := a.ollamaMgr.SelectModels(a.gpuInfo.VRAMTotalGB, a.cfg.Inference.MaxVRAMPct)
+			a.gateway.SetModels(models)
+			go a.gateway.Reconnect()
+			return nil
+		})
+		a.dash.SetModelPuller(func(model string) <-chan dashboard.PullModelProgress {
+			out := make(chan dashboard.PullModelProgress, 8)
+			go func() {
+				defer close(out)
+				for p := range a.ollamaMgr.PullModel(model) {
+					pp := dashboard.PullModelProgress{
+						Status:    p.Status,
+						Total:     p.Total,
+						Completed: p.Completed,
+					}
+					if p.Err != nil {
+						pp.Error = p.Err.Error()
+					}
+					out <- pp
+				}
+			}()
+			return out
 		})
 	}
 
@@ -340,28 +394,35 @@ func (a *Agent) checkAndUpdateState() {
 // startEarning runs the full Ollama startup pipeline in a background goroutine.
 // On success it transitions to Ready/MissingWallet; on failure it goes to Error.
 func (a *Agent) startEarning() {
-	for _, s := range []struct {
-		name string
-		fn   func() error
-	}{
-		{"install ollama", a.ollamaMgr.EnsureInstalled},
-		{"start ollama", a.ollamaMgr.Start},
-	} {
-		if err := s.fn(); err != nil {
-			log.Printf("owlrun: %s: %v", s.name, err)
-			a.mu.Lock()
-			a.starting = false
-			a.state = StateError
-			a.refreshMenuLocked()
-			a.mu.Unlock()
-			return
-		}
+	if err := a.ollamaMgr.EnsureInstalled(); err != nil {
+		log.Printf("owlrun: install ollama: %v", err)
+		a.mu.Lock()
+		a.starting = false
+		a.state = StateError
+		a.errorDetail = "Ollama is not installed. Download it from ollama.com/download, install it, then restart Owlrun."
+		a.refreshMenuLocked()
+		a.mu.Unlock()
+		return
+	}
+	if err := a.ollamaMgr.Start(); err != nil {
+		log.Printf("owlrun: start ollama: %v", err)
+		a.mu.Lock()
+		a.starting = false
+		a.state = StateError
+		a.errorDetail = "Ollama failed to start. Make sure Ollama is installed (ollama.com/download) and try restarting Owlrun."
+		a.refreshMenuLocked()
+		a.mu.Unlock()
+		return
 	}
 
-	model := a.cfg.Inference.Model
-	if model == "" {
-		chosen, suggestions := a.ollamaMgr.SelectModel(a.gpuInfo.VRAMTotalGB, a.cfg.Inference.MaxVRAMPct)
-		if chosen == "" {
+	var models []string
+	if a.cfg.Inference.Model != "" {
+		models = []string{a.cfg.Inference.Model}
+		log.Printf("owlrun: starting — model %s", a.cfg.Inference.Model)
+	} else {
+		var suggestions []string
+		models, suggestions = a.ollamaMgr.SelectModels(a.gpuInfo.VRAMTotalGB, a.cfg.Inference.MaxVRAMPct)
+		if len(models) == 0 {
 			log.Printf("owlrun: no models installed — install one first, then restart")
 			for _, s := range suggestions {
 				log.Printf("  ollama pull %s", s)
@@ -370,15 +431,14 @@ func (a *Agent) startEarning() {
 			a.mu.Lock()
 			a.starting = false
 			a.state = StateError
+			a.errorDetail = "No AI models installed. Open the dashboard at localhost:19131 and download a model, or run: ollama pull qwen2.5:0.5b"
 			a.refreshMenuLocked()
 			a.mu.Unlock()
 			return
 		}
-		model = chosen
-		log.Printf("owlrun: using installed model %s", model)
-	} else {
-		log.Printf("owlrun: starting — model %s", model)
+		log.Printf("owlrun: found %d installed models, primary: %s", len(models), models[0])
 	}
+	model := models[0] // primary model — loaded into VRAM
 
 	a.mu.Lock()
 	a.model = model
@@ -390,7 +450,7 @@ func (a *Agent) startEarning() {
 	}
 	a.refreshMenuLocked()
 	a.mu.Unlock()
-	a.gateway.SetModel(model)
+	a.gateway.SetModels(models)
 	a.gateway.Connect()
 	log.Printf("owlrun: ready — connecting to gateway")
 }
@@ -615,6 +675,7 @@ func (a *Agent) statusSnapshot() dashboard.Status {
 		s.State = "wallet"
 	case StateError:
 		s.State = "error"
+		s.ErrorDetail = a.errorDetail
 	case StatePaused:
 		s.State = "paused"
 	default:
@@ -632,8 +693,22 @@ func (a *Agent) statusSnapshot() dashboard.Status {
 	s.GPU.TempC = gpuStats.TemperatureC
 	s.GPU.PowerW = gpuStats.PowerDrawW
 
-	// Model
+	// Model + available models
 	s.Model = model
+	installed := a.ollamaMgr.ListInstalled()
+	installedSet := make(map[string]bool, len(installed))
+	for _, m := range installed {
+		installedSet[m] = true
+	}
+	for _, mi := range gpu.AllModelInfos(a.gpuInfo.VRAMTotalGB, a.cfg.Inference.MaxVRAMPct) {
+		s.AvailableModels = append(s.AvailableModels, dashboard.AvailableModel{
+			Tag:       mi.Tag,
+			VramGB:    mi.VramGB,
+			Installed: installedSet[mi.Tag],
+			Active:    mi.Tag == model,
+			Fits:      mi.Fits,
+		})
+	}
 
 	// Earnings
 	snap := a.tracker.Get()
@@ -642,11 +717,14 @@ func (a *Agent) statusSnapshot() dashboard.Status {
 
 	// Gateway
 	gwStats := a.gateway.Stats()
+	s.Models = gwStats.Models
 	s.Gateway.Connected = gwStats.Connected
 	s.Gateway.GatewayStatus = gwStats.Status
 	s.Gateway.JobsToday = gwStats.JobsToday
 	s.Gateway.TokensToday = gwStats.TokensToday
 	s.Gateway.EarnedTodayUSD = gwStats.EarnedTodayUSD
+	s.Gateway.EarnedTodaySats = gwStats.EarnedTodaySats
+	s.Gateway.EarnedTotalSats = gwStats.EarnedTotalSats
 	s.Gateway.QueueDepthGlobal = gwStats.QueueDepthGlobal
 	s.LightningAddress = a.cfg.Account.LightningAddress
 	s.RedeemThreshold = a.cfg.Account.RedeemThreshold
@@ -656,6 +734,15 @@ func (a *Agent) statusSnapshot() dashboard.Status {
 		s.ModelPricing = &dashboard.ModelPricingInfo{
 			PerMInputUSD:  gwStats.ModelPricing.PerMInputUSD,
 			PerMOutputUSD: gwStats.ModelPricing.PerMOutputUSD,
+		}
+	}
+	if len(gwStats.AllModelPricing) > 0 {
+		s.AllModelPricing = make(map[string]*dashboard.ModelPricingInfo, len(gwStats.AllModelPricing))
+		for tag, p := range gwStats.AllModelPricing {
+			s.AllModelPricing[tag] = &dashboard.ModelPricingInfo{
+				PerMInputUSD:  p.PerMInputUSD,
+				PerMOutputUSD: p.PerMOutputUSD,
+			}
 		}
 	}
 
@@ -671,7 +758,9 @@ func (a *Agent) statusSnapshot() dashboard.Status {
 	// Map broadcasts from gateway to dashboard
 	for _, b := range gwStats.Broadcasts {
 		s.Broadcasts = append(s.Broadcasts, dashboard.BroadcastMsg{
+			Title:     b.Title,
 			Message:   b.Message,
+			Severity:  b.Severity,
 			Timestamp: b.Timestamp,
 		})
 	}
@@ -683,15 +772,24 @@ func (a *Agent) statusSnapshot() dashboard.Status {
 		for _, t := range ws.TokenHistory {
 			hist = append(hist, dashboard.TokenHistoryItem{Token: t.Token, Sats: t.Sats, ClaimedAt: t.ClaimedAt})
 		}
+		var wdHist []dashboard.WithdrawHistoryItem
+		for _, w := range gwStats.WithdrawHistory {
+			wdHist = append(wdHist, dashboard.WithdrawHistoryItem{
+				AmountSats:  w.AmountSats,
+				PaymentHash: w.PaymentHash,
+				Timestamp:   w.Timestamp,
+			})
+		}
 		s.SatsWallet = dashboard.SatsWalletInfo{
-			GatewaySats:  ws.GatewaySats,
-			LocalSats:    ws.LocalSats,
-			TotalSats:    ws.TotalSats,
-			USDApprox:    ws.USDApprox,
-			ProofCount:   ws.ProofCount,
-			LastClaim:    ws.LastClaim,
-			LastToken:    ws.LastToken,
-			TokenHistory: hist,
+			GatewaySats:     ws.GatewaySats,
+			LocalSats:       ws.LocalSats,
+			TotalSats:       ws.TotalSats,
+			USDApprox:       ws.USDApprox,
+			ProofCount:      ws.ProofCount,
+			LastClaim:       ws.LastClaim,
+			LastToken:       ws.LastToken,
+			TokenHistory:    hist,
+			WithdrawHistory: wdHist,
 		}
 	}
 

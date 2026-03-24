@@ -4,6 +4,7 @@ package wallet
 
 import (
 	"database/sql"
+	"fmt"
 	"log"
 	"os"
 	"path/filepath"
@@ -65,6 +66,7 @@ func (s *Store) open() error {
 }
 
 // Balance returns the total unspent sats. Safe to call when db is nil.
+// Returns 0 and logs on error (safe default for dashboard display).
 func (s *Store) Balance() int64 {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -72,11 +74,15 @@ func (s *Store) Balance() int64 {
 		return 0
 	}
 	var total int64
-	s.db.QueryRow(`SELECT COALESCE(SUM(amount), 0) FROM proofs WHERE spent = 0`).Scan(&total)
+	if err := s.db.QueryRow(`SELECT COALESCE(SUM(amount), 0) FROM proofs WHERE spent = 0`).Scan(&total); err != nil {
+		log.Printf("owlrun: wallet balance query: %v", err)
+		return 0
+	}
 	return total
 }
 
 // ProofCount returns the number of unspent proofs.
+// Returns 0 and logs on error (safe default for dashboard display).
 func (s *Store) ProofCount() int {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -84,7 +90,10 @@ func (s *Store) ProofCount() int {
 		return 0
 	}
 	var count int
-	s.db.QueryRow(`SELECT COUNT(*) FROM proofs WHERE spent = 0`).Scan(&count)
+	if err := s.db.QueryRow(`SELECT COUNT(*) FROM proofs WHERE spent = 0`).Scan(&count); err != nil {
+		log.Printf("owlrun: wallet proof count query: %v", err)
+		return 0
+	}
 	return count
 }
 
@@ -111,7 +120,8 @@ func (s *Store) Save(mintURL string, proofs []cashu.Proof) error {
 	defer stmt.Close()
 	for _, p := range proofs {
 		if _, err := stmt.Exec(p.Amount, p.ID, p.Secret, p.C, mintURL, now); err != nil {
-			log.Printf("owlrun: wallet save proof: %v", err)
+			tx.Rollback()
+			return fmt.Errorf("wallet: save proof (secret=%s): %w", p.Secret, err)
 		}
 	}
 	return tx.Commit()
@@ -162,7 +172,10 @@ func (s *Store) MarkSpent(secrets []string) error {
 	}
 	defer stmt.Close()
 	for _, sec := range secrets {
-		stmt.Exec(sec)
+		if _, err := stmt.Exec(sec); err != nil {
+			tx.Rollback()
+			return fmt.Errorf("wallet: mark spent (secret=%s): %w", sec, err)
+		}
 	}
 	return tx.Commit()
 }
