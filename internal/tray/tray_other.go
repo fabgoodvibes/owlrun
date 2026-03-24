@@ -57,6 +57,7 @@ type daemon struct {
 // Run starts Owlrun in headless daemon mode. Blocks until SIGINT/SIGTERM.
 func Run(cfg config.Config, dash *dashboard.Server) {
 	nodeID := config.EnsureNodeID(&cfg)
+	config.EnsureAPIKey(&cfg)
 	info := gpu.Detect()
 	monitor := gpu.NewMonitor(info, 10*time.Second)
 	tracker := earnings.New()
@@ -337,6 +338,7 @@ func (d *daemon) statusSnapshot() dashboard.Status {
 
 	var s dashboard.Status
 	s.NodeID = d.nodeID
+	s.ProviderKey = d.cfg.Account.APIKey
 	s.Version = buildinfo.Version
 	s.Network = buildinfo.Network
 	s.Wallet.Address = d.cfg.Account.Wallet

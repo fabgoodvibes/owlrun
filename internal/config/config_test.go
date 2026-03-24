@@ -3,6 +3,7 @@ package config
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -52,8 +53,20 @@ func TestDefaults_NoFile(t *testing.T) {
 	if cfg.Disk.MinModelSpaceGB != 8 {
 		t.Errorf("MinModelSpaceGB = %d, want 8", cfg.Disk.MinModelSpaceGB)
 	}
-	if cfg.Account.NodeID != "" {
-		t.Errorf("NodeID should be empty without a file, got %q", cfg.Account.NodeID)
+	// Bootstrap auto-generates NodeID and APIKey when no config file exists.
+	if cfg.Account.NodeID == "" {
+		t.Error("NodeID should be auto-generated when no config file exists")
+	}
+	if cfg.Account.APIKey == "" {
+		t.Error("APIKey should be auto-generated when no config file exists")
+	}
+	if !strings.HasPrefix(cfg.Account.APIKey, "owlr_prov_") {
+		t.Errorf("APIKey should start with owlr_prov_, got %q", cfg.Account.APIKey)
+	}
+
+	// Config file should have been created on disk.
+	if _, err := os.Stat(Path()); os.IsNotExist(err) {
+		t.Error("config file should have been created by bootstrap")
 	}
 }
 
@@ -173,11 +186,17 @@ func TestLoad_PartialFile_FallsBackToDefaults(t *testing.T) {
 }
 
 func TestEnsureNodeID_GeneratesAndPersists(t *testing.T) {
-	withTempHome(t)
+	home := withTempHome(t)
+
+	// Create a config file with no node_id to test EnsureNodeID backfill.
+	confDir := filepath.Join(home, ".owlrun")
+	os.MkdirAll(confDir, 0o755)
+	ini := "[account]\napi_key = owlr_prov_test\n"
+	os.WriteFile(filepath.Join(confDir, "owlrun.conf"), []byte(ini), 0o644)
 
 	cfg, _ := Load()
 	if cfg.Account.NodeID != "" {
-		t.Fatal("expected empty NodeID before EnsureNodeID")
+		t.Fatal("expected empty NodeID from partial config")
 	}
 
 	id1 := EnsureNodeID(&cfg)
@@ -202,5 +221,66 @@ func TestEnsureNodeID_ExistingIDUnchanged(t *testing.T) {
 	id := EnsureNodeID(&cfg)
 	if id != "existing-id" {
 		t.Errorf("EnsureNodeID changed existing ID: got %q", id)
+	}
+}
+
+func TestEnsureAPIKey_GeneratesWhenEmpty(t *testing.T) {
+	home := withTempHome(t)
+
+	// Create a config file with no api_key.
+	confDir := filepath.Join(home, ".owlrun")
+	os.MkdirAll(confDir, 0o755)
+	ini := "[account]\nnode_id = test-node\n"
+	os.WriteFile(filepath.Join(confDir, "owlrun.conf"), []byte(ini), 0o644)
+
+	cfg, _ := Load()
+	if cfg.Account.APIKey != "" {
+		t.Fatal("expected empty APIKey from partial config")
+	}
+
+	key := EnsureAPIKey(&cfg)
+	if !strings.HasPrefix(key, "owlr_prov_") {
+		t.Errorf("generated key should start with owlr_prov_, got %q", key)
+	}
+	if len(key) != len("owlr_prov_")+48 {
+		t.Errorf("generated key should be owlr_prov_ + 48 hex chars, got len %d", len(key))
+	}
+
+	// Should persist: reload and check.
+	cfg2, _ := Load()
+	if cfg2.Account.APIKey != key {
+		t.Errorf("persisted APIKey = %q, want %q", cfg2.Account.APIKey, key)
+	}
+}
+
+func TestEnsureAPIKey_ExistingKeyUnchanged(t *testing.T) {
+	withTempHome(t)
+
+	cfg := Config{Account: AccountConfig{APIKey: "owlr_prov_existing"}}
+	key := EnsureAPIKey(&cfg)
+	if key != "owlr_prov_existing" {
+		t.Errorf("EnsureAPIKey changed existing key: got %q", key)
+	}
+}
+
+func TestBootstrap_RoundTrip(t *testing.T) {
+	withTempHome(t)
+
+	// First load creates config via bootstrap.
+	cfg1, err := Load()
+	if err != nil {
+		t.Fatalf("first Load() error: %v", err)
+	}
+
+	// Second load reads the bootstrapped file — values should match.
+	cfg2, err := Load()
+	if err != nil {
+		t.Fatalf("second Load() error: %v", err)
+	}
+	if cfg2.Account.NodeID != cfg1.Account.NodeID {
+		t.Errorf("NodeID mismatch: %q vs %q", cfg1.Account.NodeID, cfg2.Account.NodeID)
+	}
+	if cfg2.Account.APIKey != cfg1.Account.APIKey {
+		t.Errorf("APIKey mismatch: %q vs %q", cfg1.Account.APIKey, cfg2.Account.APIKey)
 	}
 }

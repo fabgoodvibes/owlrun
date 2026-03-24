@@ -179,6 +179,7 @@ func runHeadless(cfg config.Config, dash *dashboard.Server) {
 // buildDaemon constructs the shared daemon (tray and headless both use this).
 func buildDaemon(cfg config.Config, dash *dashboard.Server) *sniDaemon {
 	nodeID := config.EnsureNodeID(&cfg)
+	config.EnsureAPIKey(&cfg)
 	info := gpu.Detect()
 	monitor := gpu.NewMonitor(info, 10*time.Second)
 	tracker := earnings.New()
@@ -756,6 +757,7 @@ func (d *sniDaemon) statusSnapshot() dashboard.Status {
 
 	var s dashboard.Status
 	s.NodeID = d.nodeID
+	s.ProviderKey = d.cfg.Account.APIKey
 	s.Version = buildinfo.Version
 	s.Network = buildinfo.Network
 	s.Wallet.Address = d.cfg.Account.Wallet
