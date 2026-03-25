@@ -133,6 +133,13 @@ func Run(cfg config.Config, dash *dashboard.Server) {
 			d.gateway.SetRedeemThreshold(threshold)
 			return nil
 		})
+		dash.SetJobModeSetter(func(mode string) error {
+			if err := config.SaveJobMode(mode); err != nil {
+				return err
+			}
+			d.setJobMode(mode)
+			return nil
+		})
 		dash.SetModelSwitcher(func(model string) error {
 			if !d.ollamaMgr.ModelInstalled(model) {
 				return fmt.Errorf("model %s not installed — download it first", model)
@@ -251,6 +258,24 @@ func (d *daemon) check() {
 	}
 }
 
+func (d *daemon) setJobMode(mode string) {
+	d.mu.Lock()
+	old := d.jobMode
+	d.jobMode = mode
+	st := d.st
+	d.mu.Unlock()
+	log.Printf("owlrun: job mode changed: %s -> %s", old, mode)
+
+	if mode == "never" && (old == "idle" || old == "always") {
+		if st == stateEarning || st == stateReady || st == stateMissingWallet {
+			d.mu.Lock()
+			d.st = stateIdle
+			d.mu.Unlock()
+			go d.stopEarning()
+		}
+	}
+}
+
 func (d *daemon) startEarning() {
 	if err := d.ollamaMgr.EnsureInstalled(); err != nil {
 		log.Printf("owlrun: install ollama: %v", err)
@@ -334,9 +359,11 @@ func (d *daemon) statusSnapshot() dashboard.Status {
 	d.mu.Lock()
 	st := d.st
 	model := d.model
+	jobMode := d.jobMode
 	d.mu.Unlock()
 
 	var s dashboard.Status
+	s.JobMode = jobMode
 	s.NodeID = d.nodeID
 	s.ProviderKey = d.cfg.Account.APIKey
 	s.Version = buildinfo.Version

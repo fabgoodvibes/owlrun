@@ -260,6 +260,13 @@ func buildDaemon(cfg config.Config, dash *dashboard.Server) *sniDaemon {
 			d.gateway.SetRedeemThreshold(threshold)
 			return nil
 		})
+		dash.SetJobModeSetter(func(mode string) error {
+			if err := config.SaveJobMode(mode); err != nil {
+				return err
+			}
+			d.setJobMode(mode)
+			return nil
+		})
 		dash.SetModelSwitcher(func(model string) error {
 			if !d.ollamaMgr.ModelInstalled(model) {
 				return fmt.Errorf("model %s not installed — download it first", model)
@@ -753,9 +760,11 @@ func (d *sniDaemon) statusSnapshot() dashboard.Status {
 	d.mu.Lock()
 	st := d.st
 	model := d.model
+	jobMode := d.jobMode
 	d.mu.Unlock()
 
 	var s dashboard.Status
+	s.JobMode = jobMode
 	s.NodeID = d.nodeID
 	s.ProviderKey = d.cfg.Account.APIKey
 	s.Version = buildinfo.Version

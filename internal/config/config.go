@@ -189,6 +189,20 @@ func SaveRedeemThreshold(threshold int) error {
 	return f.SaveTo(path)
 }
 
+// SaveJobMode persists the job acceptance mode to the config file.
+func SaveJobMode(mode string) error {
+	path := Path()
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		return err
+	}
+	f, err := ini.LooseLoad(path)
+	if err != nil {
+		f = ini.Empty()
+	}
+	f.Section("idle").Key("job_mode").SetValue(mode)
+	return f.SaveTo(path)
+}
+
 // Path returns the default config file location: ~/.owlrun/owlrun.conf
 func Path() string {
 	home, err := os.UserHomeDir()

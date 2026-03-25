@@ -222,6 +222,13 @@ func (a *Agent) onReady() {
 			a.gateway.SetRedeemThreshold(threshold)
 			return nil
 		})
+		a.dash.SetJobModeSetter(func(mode string) error {
+			if err := config.SaveJobMode(mode); err != nil {
+				return err
+			}
+			a.setJobMode(mode)
+			return nil
+		})
 		a.dash.SetModelSwitcher(func(model string) error {
 			if !a.ollamaMgr.ModelInstalled(model) {
 				return fmt.Errorf("model %s not installed — download it first", model)
@@ -655,9 +662,11 @@ func (a *Agent) statusSnapshot() dashboard.Status {
 	a.mu.Lock()
 	state := a.state
 	model := a.model
+	jobMode := a.jobMode
 	a.mu.Unlock()
 
 	var s dashboard.Status
+	s.JobMode = jobMode
 	s.NodeID = a.nodeID
 	s.ProviderKey = a.cfg.Account.APIKey
 	s.Version = buildinfo.Version

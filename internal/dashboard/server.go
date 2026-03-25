@@ -29,6 +29,8 @@ type Status struct {
 	State       string `json:"state"`        // "earning" | "idle" | "paused" | "error"
 	ErrorDetail string `json:"error_detail,omitempty"` // user-facing error message when state=error
 
+	JobMode string `json:"job_mode"` // "never", "idle", "always"
+
 	Wallet struct {
 		Address    string `json:"address"`
 		Warning    string `json:"warning,omitempty"`    // non-empty = user needs to set wallet
@@ -147,6 +149,9 @@ type SetLightningAddressFunc func(addr string) error
 // SetRedeemThresholdFunc saves a redeem threshold and re-registers with gateway.
 type SetRedeemThresholdFunc func(threshold int) error
 
+// SetJobModeFunc switches the job acceptance mode ("never", "idle", "always").
+type SetJobModeFunc func(mode string) error
+
 // SwitchModelFunc switches the active primary model. If the model is already
 // installed, it loads it into VRAM and re-registers. Returns error if not installed.
 type SwitchModelFunc func(model string) error
@@ -187,6 +192,7 @@ type Server struct {
 	pullModel      atomic.Pointer[PullModelFunc]
 	removeModel    atomic.Pointer[RemoveModelFunc]
 	pulling        atomic.Bool // true while a pull is in progress
+	setJobMode     atomic.Pointer[SetJobModeFunc]
 }
 
 // New creates a dashboard Server on the given port.
@@ -238,6 +244,11 @@ func (s *Server) SetRedeemThresholdSetter(fn SetRedeemThresholdFunc) {
 	s.setRedeemThr.Store(&fn)
 }
 
+// SetJobModeSetter wires the job mode switch function.
+func (s *Server) SetJobModeSetter(fn SetJobModeFunc) {
+	s.setJobMode.Store(&fn)
+}
+
 // Start launches the HTTP server in the background.
 // The listener is bound before returning so the port is ready for connections.
 func (s *Server) Start() error {
@@ -252,6 +263,7 @@ func (s *Server) Start() error {
 	mux.HandleFunc("/api/pull-model", s.handlePullModel)
 	mux.HandleFunc("/api/model-size", s.handleModelSize)
 	mux.HandleFunc("/api/remove-model", s.handleRemoveModel)
+	mux.HandleFunc("/api/set-job-mode", s.handleSetJobMode)
 	addr := fmt.Sprintf("127.0.0.1:%d", s.port)
 	ln, err := net.Listen("tcp", addr)
 	if err != nil {
@@ -425,6 +437,46 @@ func (s *Server) handleSetRedeemThreshold(w http.ResponseWriter, r *http.Request
 	}
 
 	json.NewEncoder(w).Encode(map[string]any{"status": "ok", "threshold": req.Threshold})
+}
+
+func (s *Server) handleSetJobMode(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Content-Type", "application/json")
+	w.Header().Set("Access-Control-Allow-Origin", "*")
+
+	if r.Method != http.MethodPost {
+		w.WriteHeader(http.StatusMethodNotAllowed)
+		json.NewEncoder(w).Encode(map[string]string{"error": "POST required"})
+		return
+	}
+
+	fn := s.setJobMode.Load()
+	if fn == nil {
+		w.WriteHeader(http.StatusServiceUnavailable)
+		json.NewEncoder(w).Encode(map[string]string{"error": "not ready"})
+		return
+	}
+
+	var req struct {
+		Mode string `json:"mode"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		w.WriteHeader(http.StatusBadRequest)
+		json.NewEncoder(w).Encode(map[string]string{"error": "invalid request"})
+		return
+	}
+	if req.Mode != "never" && req.Mode != "idle" && req.Mode != "always" {
+		w.WriteHeader(http.StatusBadRequest)
+		json.NewEncoder(w).Encode(map[string]string{"error": "mode must be never, idle, or always"})
+		return
+	}
+
+	if err := (*fn)(req.Mode); err != nil {
+		w.WriteHeader(http.StatusInternalServerError)
+		json.NewEncoder(w).Encode(map[string]string{"error": err.Error()})
+		return
+	}
+
+	json.NewEncoder(w).Encode(map[string]any{"status": "ok", "mode": req.Mode})
 }
 
 func (s *Server) handleSwitchModel(w http.ResponseWriter, r *http.Request) {
@@ -858,6 +910,20 @@ const dashboardHTML = `<!DOCTYPE html>
         </div>
       </div>
 
+      <!-- Job mode selector -->
+      <div style="margin-top:16px;padding-top:14px;border-top:1px solid var(--border)">
+        <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px">
+          <span style="font-size:14px;color:#d0d0e0">Accept jobs</span>
+          <span id="job-mode-label" style="font-size:13px;color:var(--text-muted)"></span>
+        </div>
+        <div id="job-mode-btns" style="display:flex;gap:6px">
+          <button onclick="setJobMode('always')" id="jm-always" style="flex:1;padding:8px 0;border-radius:6px;border:1px solid var(--border-active);background:var(--bg-card-hover);color:var(--text);cursor:pointer;font-size:13px;font-weight:600;transition:all .15s">Always</button>
+          <button onclick="setJobMode('idle')" id="jm-idle" style="flex:1;padding:8px 0;border-radius:6px;border:1px solid var(--border-active);background:var(--bg-card-hover);color:var(--text);cursor:pointer;font-size:13px;font-weight:600;transition:all .15s">When idle</button>
+          <button onclick="setJobMode('never')" id="jm-never" style="flex:1;padding:8px 0;border-radius:6px;border:1px solid var(--border-active);background:var(--bg-card-hover);color:var(--text);cursor:pointer;font-size:13px;font-weight:600;transition:all .15s">Never</button>
+        </div>
+        <div id="job-mode-hint" style="font-size:12px;color:var(--text-muted);margin-top:6px"></div>
+      </div>
+
       <!-- Earnings stats -->
       <div style="margin-top:16px;padding-top:14px;border-top:1px solid var(--border)">
         <div class="stat">
@@ -1286,6 +1352,9 @@ function update(d) {
     document.getElementById('ln-address-display').textContent = lnAddr;
     document.getElementById('sats-gateway').textContent = fmtSats(sw.gateway_sats);
     document.getElementById('sats-usd').textContent = sw.usd_approx ? '$' + sw.usd_approx.toFixed(2) : '$0.00';
+    // Job mode
+    if (d.job_mode) { applyJobModeUI(d.job_mode); }
+
     // Threshold slider
     var thr = d.redeem_threshold || 500;
     var slider = document.getElementById('threshold-slider');
@@ -1462,6 +1531,30 @@ async function saveRedeemThreshold(val) {
   try {
     await fetch('/api/set-redeem-threshold', {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({threshold:parseInt(val)})});
   } catch(e) {}
+}
+
+async function setJobMode(mode) {
+  try {
+    var r = await fetch('/api/set-job-mode', {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({mode:mode})});
+    if (r.ok) { applyJobModeUI(mode); poll(); }
+  } catch(e) {}
+}
+
+function applyJobModeUI(mode) {
+  var btns = {always: document.getElementById('jm-always'), idle: document.getElementById('jm-idle'), never: document.getElementById('jm-never')};
+  var hints = {always: 'Earning whenever connected', idle: 'Earning only when you are away', never: 'Not accepting any jobs'};
+  for (var k in btns) {
+    if (k === mode) {
+      btns[k].style.background = '#f7931a';
+      btns[k].style.color = '#fff';
+      btns[k].style.borderColor = '#f7931a';
+    } else {
+      btns[k].style.background = 'var(--bg-card-hover)';
+      btns[k].style.color = 'var(--text)';
+      btns[k].style.borderColor = 'var(--border-active)';
+    }
+  }
+  document.getElementById('job-mode-hint').textContent = hints[mode] || '';
 }
 
 async function poll() {
