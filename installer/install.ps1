@@ -1,4 +1,5 @@
 #Requires -Version 5.1
+# installer-version: 0.9.15
 <#
 .SYNOPSIS
   Owlrun Windows installer.
