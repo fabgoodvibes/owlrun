@@ -12,9 +12,8 @@ env:
   LDFLAGS_PKG: "github.com/fabgoodvibes/owlrun/internal/buildinfo"
 
 jobs:
-  # ── Build all client binaries (beta + production) ──────────────────────────
   build:
-    name: Build
+    name: Build (${{ matrix.network }})
     runs-on: ubuntu-latest
 
     strategy:
@@ -85,82 +84,35 @@ jobs:
             owlrun-darwin-amd64 owlrun-darwin-arm64 > checksums.txt
           cat checksums.txt
 
-      - name: Upload artifacts
-        uses: actions/upload-artifact@v4
-        with:
-          name: owlrun-${{ matrix.network }}
-          path: dist/
-          retention-days: 7
-
-  # ── Deploy dev binaries to get.owlrun.me/download/beta/dev/ ─────────────────
-  deploy-dev:
-    name: Deploy dev to get.owlrun.me
-    needs: build
-    runs-on: ubuntu-latest
-    if: github.ref == 'refs/heads/dev'
-
-    steps:
-      - uses: actions/checkout@v4
-
-      - name: Download beta artifacts
-        uses: actions/download-artifact@v4
-        with:
-          name: owlrun-beta
-          path: dist/
-
-      - name: Prepare Pages directory
-        run: |
-          mkdir -p pages/download/beta/dev
-
-          # Copy binaries to dev dir
-          cp dist/* pages/download/beta/dev/
-
-          # Install scripts at CDN root
-          cp installer/install.sh pages/install.sh
-          cp installer/install.ps1 pages/install.ps1
-
-      - name: Deploy to Cloudflare Pages
+      # Deploy dev channel (beta network, dev branch only)
+      - name: Deploy dev to CDN
+        if: matrix.network == 'beta' && github.ref == 'refs/heads/dev'
         uses: cloudflare/wrangler-action@v3
         with:
           apiToken: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           accountId: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
-          command: pages deploy pages --project-name=owlrun-cdn --branch=dev
+          command: |
+            pages deploy pages --project-name=owlrun-cdn --branch=dev
+          preCommands: |
+            mkdir -p pages/download/beta/dev
+            cp dist/* pages/download/beta/dev/
+            cp installer/install.sh pages/install.sh
+            cp installer/install.ps1 pages/install.ps1
 
-  # ── Deploy beta binaries to get.owlrun.me via Cloudflare Pages (tags only) ─
-  deploy-beta:
-    name: Deploy beta to get.owlrun.me
-    needs: build
-    runs-on: ubuntu-latest
-    if: startsWith(github.ref, 'refs/tags/v')
-
-    steps:
-      - uses: actions/checkout@v4
-
-      - name: Download beta artifacts
-        uses: actions/download-artifact@v4
-        with:
-          name: owlrun-beta
-          path: dist/
-
-      - name: Prepare Pages directory
-        run: |
-          TAG="${{ github.ref_name }}"
-          mkdir -p pages/download/beta/${TAG}
-          mkdir -p pages/download/beta/latest
-
-          # Copy binaries to versioned dir
-          cp dist/* pages/download/beta/${TAG}/
-
-          # Copy binaries to /latest as well
-          cp dist/* pages/download/beta/latest/
-
-          # Install scripts at CDN root
-          cp installer/install.sh pages/install.sh
-          cp installer/install.ps1 pages/install.ps1
-
-      - name: Deploy to Cloudflare Pages
+      # Deploy main channel (beta network, tags only)
+      - name: Deploy beta to CDN
+        if: matrix.network == 'beta' && startsWith(github.ref, 'refs/tags/v')
         uses: cloudflare/wrangler-action@v3
         with:
           apiToken: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           accountId: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
-          command: pages deploy pages --project-name=owlrun-cdn --branch=main
+          command: |
+            pages deploy pages --project-name=owlrun-cdn --branch=main
+          preCommands: |
+            TAG="${{ github.ref_name }}"
+            mkdir -p pages/download/beta/${TAG}
+            mkdir -p pages/download/beta/latest
+            cp dist/* pages/download/beta/${TAG}/
+            cp dist/* pages/download/beta/latest/
+            cp installer/install.sh pages/install.sh
+            cp installer/install.ps1 pages/install.ps1
