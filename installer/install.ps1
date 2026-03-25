@@ -23,7 +23,7 @@ param(
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
 
-# ── Constants ────────────────────────────────────────────────────────────────
+# -- Constants ----------------------------------------------------------------
 
 $INSTALL_DIR  = Join-Path $env:LOCALAPPDATA 'Owlrun'
 $CONFIG_DIR   = Join-Path $env:USERPROFILE  '.owlrun'
@@ -37,7 +37,7 @@ $OLLAMA_EXE   = Join-Path $env:LOCALAPPDATA 'Programs\Ollama\ollama.exe'
 $MIN_DISK_GB  = 8
 $WARN_DISK_PCT = 30
 
-# ── Helpers ──────────────────────────────────────────────────────────────────
+# -- Helpers -------------------------------------------------------------------
 
 function Write-Step  { param($msg) Write-Host "  > $msg" -ForegroundColor Cyan }
 function Write-OK    { param($msg) Write-Host "  + $msg" -ForegroundColor Green }
@@ -186,7 +186,7 @@ min_model_space_gb = 8
   Write-OK "Config written to $CONFIG_FILE"
 }
 
-# ── Main ─────────────────────────────────────────────────────────────────────
+# -- Main ----------------------------------------------------------------------
 
 Clear-Host
 Write-Host ""
@@ -194,7 +194,7 @@ Write-Host "  ======== Owlrun Installer" -ForegroundColor Green
 Write-Host "           Earn money while your GPU sleeps" -ForegroundColor DarkGreen
 Write-Host ""
 
-# ── 1. GPU detection ─────────────────────────────────────────────────────────
+# -- 1. GPU detection ----------------------------------------------------------
 Write-Title "[ 1/7 ] Detecting GPU"
 $gpu = Get-GpuInfo
 if ($gpu.Vendor -eq 'none') {
@@ -204,7 +204,7 @@ if ($gpu.Vendor -eq 'none') {
   Write-OK "$($gpu.Name) -$vramGB GB VRAM ($($gpu.Vendor.ToUpper()))"
 }
 
-# ── 2. Disk space check ───────────────────────────────────────────────────────
+# -- 2. Disk space check -------------------------------------------------------
 Write-Title "[ 2/7 ] Checking disk space"
 $diskDrive = Split-Path -Qualifier $env:USERPROFILE
 $disk = Get-DiskInfo $diskDrive
@@ -224,11 +224,11 @@ if ($disk) {
   Write-Warn "Could not check disk space -continuing"
 }
 
-# ── 3. Ollama ─────────────────────────────────────────────────────────────────
+# -- 3. Ollama -----------------------------------------------------------------
 Write-Title "[ 3/7 ] Checking Ollama"
 Install-Ollama
 
-# ── 4. Download owlrun.exe ────────────────────────────────────────────────────
+# -- 4. Download owlrun.exe ----------------------------------------------------
 Write-Title "[ 4/7 ] Installing Owlrun"
 New-Item -ItemType Directory -Force -Path $INSTALL_DIR | Out-Null
 
@@ -266,7 +266,7 @@ try {
   Write-Warn "Could not fetch checksums.txt -skipping verification"
 }
 
-# ── 5. Config wizard ──────────────────────────────────────────────────────────
+# -- 5. Config wizard ----------------------------------------------------------
 Write-Title "[ 5/7 ] Configuration"
 
 $existingNodeId = $null
@@ -299,16 +299,16 @@ if (-not (Test-Path $CONFIG_FILE)) {
   Write-OK "Existing config preserved at $CONFIG_FILE"
 }
 
-# ── 6. Startup task ───────────────────────────────────────────────────────────
+# -- 6. Startup task -----------------------------------------------------------
 Write-Title "[ 6/7 ] Registering startup task"
 Register-StartupTask
 
-# ── 7. Launch ─────────────────────────────────────────────────────────────────
+# -- 7. Launch -----------------------------------------------------------------
 Write-Title "[ 7/7 ] Launching Owlrun"
 Start-Process -FilePath $EXE_PATH
 Write-OK "Owlrun is running -look for the owl icon in your system tray"
 
-# ── Done ──────────────────────────────────────────────────────────────────────
+# -- Done ----------------------------------------------------------------------
 Write-Host ""
 Write-Host "  +------------------------------------------+" -ForegroundColor Green
 Write-Host "  |  Owlrun installed successfully!           |" -ForegroundColor Green
