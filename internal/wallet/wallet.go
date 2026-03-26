@@ -111,11 +111,12 @@ func (w *Wallet) Claim(amountSats int64) (string, error) {
 // AutoClaim checks if the gateway balance exceeds the threshold and enough
 // time has passed since the last claim. If so, it claims all available sats.
 // Called from the heartbeat_ack handler. Safe to call concurrently.
+// gatewaySats is in msats (1 sat = 1000 msats).
 func (w *Wallet) AutoClaim(gatewaySats int64) {
-	const minSats = 10
+	const minMsats = 10_000 // 10 sats in msats
 	const cooldown = 60 * time.Second
 
-	if gatewaySats < minSats {
+	if gatewaySats < minMsats {
 		return
 	}
 
@@ -192,7 +193,8 @@ func (w *Wallet) GetStats(gatewaySats int64, btcUSD float64) Stats {
 
 	var usd float64
 	if btcUSD > 0 {
-		usd = float64(totalSats) / 100_000_000.0 * btcUSD
+		// Values are in msats (1 BTC = 100_000_000_000 msats).
+		usd = float64(totalSats) / 100_000_000_000.0 * btcUSD
 	}
 
 	w.mu.Lock()

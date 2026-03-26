@@ -37,15 +37,15 @@ import (
 
 // Run is the Linux entry point. Tries a StatusNotifierItem tray widget when
 // a graphical display is available; falls back to headless daemon silently.
-func Run(cfg config.Config, dash *dashboard.Server) {
+func Run(cfg config.Config, dash *dashboard.Server, mockMode bool) {
 	if hasDisplay() {
-		if err := runSNI(cfg, dash); err != nil {
+		if err := runSNI(cfg, dash, mockMode); err != nil {
 			log.Printf("owlrun: tray unavailable (%v), running headless", err)
-			runHeadless(cfg, dash)
+			runHeadless(cfg, dash, mockMode)
 		}
 		return
 	}
-	runHeadless(cfg, dash)
+	runHeadless(cfg, dash, mockMode)
 }
 
 func hasDisplay() bool {
@@ -119,6 +119,7 @@ type sniDaemon struct {
 	gateway   *marketplace.Router
 	ecash     *wallet.Wallet
 	dash      *dashboard.Server
+	mockMode  bool
 
 	// Precomputed icon pixmaps (decoded from ICO at startup).
 	iconGreen  []iconPixmap
@@ -144,13 +145,13 @@ type sniDaemon struct {
 
 // ─── SNI tray entry point ─────────────────────────────────────────────────────
 
-func runSNI(cfg config.Config, dash *dashboard.Server) error {
+func runSNI(cfg config.Config, dash *dashboard.Server, mockMode bool) error {
 	conn, err := dbus.ConnectSessionBus()
 	if err != nil {
 		return fmt.Errorf("dbus session: %w", err)
 	}
 
-	d := buildDaemon(cfg, dash)
+	d := buildDaemon(cfg, dash, mockMode)
 	d.conn = conn
 	d.menuRev = 1
 
@@ -167,8 +168,8 @@ func runSNI(cfg config.Config, dash *dashboard.Server) error {
 	return nil
 }
 
-func runHeadless(cfg config.Config, dash *dashboard.Server) {
-	d := buildDaemon(cfg, dash)
+func runHeadless(cfg config.Config, dash *dashboard.Server, mockMode bool) {
+	d := buildDaemon(cfg, dash, mockMode)
 
 	log.Printf("owlrun: node %s | gpu %s %s (%.0f GB VRAM)",
 		d.nodeID, d.gpuInfo.Vendor, d.gpuInfo.Name, d.gpuInfo.VRAMTotalGB)
@@ -177,7 +178,7 @@ func runHeadless(cfg config.Config, dash *dashboard.Server) {
 }
 
 // buildDaemon constructs the shared daemon (tray and headless both use this).
-func buildDaemon(cfg config.Config, dash *dashboard.Server) *sniDaemon {
+func buildDaemon(cfg config.Config, dash *dashboard.Server, mockMode bool) *sniDaemon {
 	nodeID := config.EnsureNodeID(&cfg)
 	config.EnsureAPIKey(&cfg)
 	info := gpu.Detect()
@@ -196,6 +197,7 @@ func buildDaemon(cfg config.Config, dash *dashboard.Server) *sniDaemon {
 		ollamaMgr:  inference.New(info),
 		dash:       dash,
 		jobMode:    cfg.Idle.JobMode,
+		mockMode:   mockMode,
 		iconGreen:  safeIco(assets.IconGreen),
 		iconYellow: safeIco(assets.IconYellow),
 		iconGrey:   safeIco(assets.IconGrey),
@@ -234,6 +236,11 @@ func buildDaemon(cfg config.Config, dash *dashboard.Server) *sniDaemon {
 		},
 	)
 
+	if cfg.Inference.ContextLength > 0 {
+		d.ollamaMgr.SetContextLength(cfg.Inference.ContextLength)
+		d.gateway.SetContextLength(cfg.Inference.ContextLength)
+	}
+
 	if dash != nil {
 		dash.SetProvider(d.statusSnapshot)
 		dash.SetTracker(tracker)
@@ -265,6 +272,24 @@ func buildDaemon(cfg config.Config, dash *dashboard.Server) *sniDaemon {
 				return err
 			}
 			d.setJobMode(mode)
+			return nil
+		})
+		dash.SetContextLengthSetter(func(ctxLen int) error {
+			if err := config.SaveContextLength(ctxLen); err != nil {
+				return err
+			}
+			d.mu.Lock()
+			d.cfg.Inference.ContextLength = ctxLen
+			model := d.model
+			d.mu.Unlock()
+			d.ollamaMgr.SetContextLength(ctxLen)
+			d.gateway.SetContextLength(ctxLen)
+			log.Printf("owlrun: context length changed to %d", ctxLen)
+			if model != "" {
+				if err := d.ollamaMgr.LoadModel(model); err != nil {
+					log.Printf("owlrun: reload model with new context length: %v", err)
+				}
+			}
 			return nil
 		})
 		dash.SetModelSwitcher(func(model string) error {
@@ -668,6 +693,40 @@ func (d *sniDaemon) check() {
 }
 
 func (d *sniDaemon) startEarning() {
+	// Mock mode: start fake Ollama server, skip real Ollama entirely.
+	if d.mockMode {
+		mockSrv, err := inference.StartMockOllama()
+		if err != nil {
+			log.Printf("owlrun: mock ollama failed: %v", err)
+			d.mu.Lock()
+			d.starting = false
+			d.st = linuxError
+			d.errorDetail = "Mock Ollama failed to start: " + err.Error()
+			d.applyStateLocked()
+			d.mu.Unlock()
+			return
+		}
+		mockAddr := "http://" + mockSrv.Addr
+		d.ollamaMgr.SetHost(mockAddr)
+		d.gateway.SetOllamaBase(mockAddr)
+		log.Printf("owlrun: mock mode — using fake model %s on %s", inference.MockModel(), mockAddr)
+
+		d.mu.Lock()
+		d.model = inference.MockModel()
+		d.starting = false
+		if config.NeedsWallet(&d.cfg) {
+			d.st = linuxMissingWallet
+		} else {
+			d.st = linuxReady
+		}
+		d.applyStateLocked()
+		d.mu.Unlock()
+		d.gateway.SetModels([]string{inference.MockModel()})
+		d.gateway.Connect()
+		log.Printf("owlrun: mock mode ready — connecting to gateway")
+		return
+	}
+
 	// Phase 1: get Ollama running.
 	if err := d.ollamaMgr.EnsureInstalled(); err != nil {
 		log.Printf("owlrun: install ollama: %v", err)
@@ -828,6 +887,7 @@ func (d *sniDaemon) statusSnapshot() dashboard.Status {
 	s.Gateway.QueueDepthGlobal = gwStats.QueueDepthGlobal
 	s.LightningAddress = d.cfg.Account.LightningAddress
 	s.RedeemThreshold = d.cfg.Account.RedeemThreshold
+	s.ContextLength = d.cfg.Inference.ContextLength
 
 	// Model pricing from gateway
 	if gwStats.ModelPricing != nil {

@@ -46,6 +46,7 @@ type daemon struct {
 	ollamaMgr *inference.Manager
 	gateway   *marketplace.Router
 	ecash     *wallet.Wallet
+	mockMode  bool
 
 	mu          sync.Mutex
 	st          state
@@ -55,7 +56,7 @@ type daemon struct {
 }
 
 // Run starts Owlrun in headless daemon mode. Blocks until SIGINT/SIGTERM.
-func Run(cfg config.Config, dash *dashboard.Server) {
+func Run(cfg config.Config, dash *dashboard.Server, mockMode bool) {
 	nodeID := config.EnsureNodeID(&cfg)
 	config.EnsureAPIKey(&cfg)
 	info := gpu.Detect()
@@ -73,6 +74,7 @@ func Run(cfg config.Config, dash *dashboard.Server) {
 		ecash:     w,
 		ollamaMgr: inference.New(info),
 		jobMode:   cfg.Idle.JobMode,
+		mockMode:  mockMode,
 	}
 
 	gw := marketplace.New(
@@ -107,6 +109,11 @@ func Run(cfg config.Config, dash *dashboard.Server) {
 	)
 	d.gateway = gw
 
+	if cfg.Inference.ContextLength > 0 {
+		d.ollamaMgr.SetContextLength(cfg.Inference.ContextLength)
+		gw.SetContextLength(cfg.Inference.ContextLength)
+	}
+
 	if dash != nil {
 		dash.SetProvider(d.statusSnapshot)
 		dash.SetTracker(tracker)
@@ -138,6 +145,24 @@ func Run(cfg config.Config, dash *dashboard.Server) {
 				return err
 			}
 			d.setJobMode(mode)
+			return nil
+		})
+		dash.SetContextLengthSetter(func(ctxLen int) error {
+			if err := config.SaveContextLength(ctxLen); err != nil {
+				return err
+			}
+			d.mu.Lock()
+			d.cfg.Inference.ContextLength = ctxLen
+			model := d.model
+			d.mu.Unlock()
+			d.ollamaMgr.SetContextLength(ctxLen)
+			d.gateway.SetContextLength(ctxLen)
+			log.Printf("owlrun: context length changed to %d", ctxLen)
+			if model != "" {
+				if err := d.ollamaMgr.LoadModel(model); err != nil {
+					log.Printf("owlrun: reload model with new context length: %v", err)
+				}
+			}
 			return nil
 		})
 		dash.SetModelSwitcher(func(model string) error {
@@ -277,6 +302,35 @@ func (d *daemon) setJobMode(mode string) {
 }
 
 func (d *daemon) startEarning() {
+	if d.mockMode {
+		mockSrv, err := inference.StartMockOllama()
+		if err != nil {
+			log.Printf("owlrun: mock ollama failed: %v", err)
+			d.mu.Lock()
+			d.st = stateError
+			d.errorDetail = "Mock Ollama failed to start: " + err.Error()
+			d.mu.Unlock()
+			return
+		}
+		mockAddr := "http://" + mockSrv.Addr
+		d.ollamaMgr.SetHost(mockAddr)
+		d.gateway.SetOllamaBase(mockAddr)
+		log.Printf("owlrun: mock mode — using fake model %s on %s", inference.MockModel(), mockAddr)
+
+		d.mu.Lock()
+		d.model = inference.MockModel()
+		if config.NeedsWallet(&d.cfg) {
+			d.st = stateMissingWallet
+		} else {
+			d.st = stateReady
+		}
+		d.mu.Unlock()
+		d.gateway.SetModels([]string{inference.MockModel()})
+		d.gateway.Connect()
+		log.Printf("owlrun: mock mode ready — connecting to gateway")
+		return
+	}
+
 	if err := d.ollamaMgr.EnsureInstalled(); err != nil {
 		log.Printf("owlrun: install ollama: %v", err)
 		d.mu.Lock()
@@ -426,6 +480,7 @@ func (d *daemon) statusSnapshot() dashboard.Status {
 	s.Gateway.QueueDepthGlobal = gwStats.QueueDepthGlobal
 	s.LightningAddress = d.cfg.Account.LightningAddress
 	s.RedeemThreshold = d.cfg.Account.RedeemThreshold
+	s.ContextLength = d.cfg.Inference.ContextLength
 
 	// Model pricing from gateway
 	if gwStats.ModelPricing != nil {

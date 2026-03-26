@@ -13,11 +13,22 @@ import (
 	"github.com/fabgoodvibes/owlrun/internal/tray"
 )
 
+func hasCLIFlag(flag string) bool {
+	for _, a := range os.Args[1:] {
+		if a == flag {
+			return true
+		}
+	}
+	return false
+}
+
 func main() {
-	if len(os.Args) > 1 && (os.Args[1] == "--version" || os.Args[1] == "-v") {
+	if hasCLIFlag("--version") || hasCLIFlag("-v") {
 		fmt.Printf("owlrun %s (%s)\n", buildinfo.Version, buildinfo.Network)
 		os.Exit(0)
 	}
+
+	mockMode := hasCLIFlag("--mock")
 
 	// Load config from ~/.owlrun/owlrun.conf (defaults used if file absent).
 	cfg, err := config.Load()
@@ -35,6 +46,10 @@ func main() {
 		log.Printf("owlrun: dashboard failed to start: %v", err)
 	}
 
+	if mockMode {
+		log.Printf("owlrun: starting in MOCK MODE — no real Ollama required")
+	}
+
 	// Run the system tray — blocks until the user clicks Quit.
-	tray.Run(cfg, dash)
+	tray.Run(cfg, dash, mockMode)
 }

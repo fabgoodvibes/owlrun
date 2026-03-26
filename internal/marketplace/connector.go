@@ -56,6 +56,9 @@ type GatewayStats struct {
 	ModelPricing     *ModelPricing               // primary model (backward compat)
 	AllModelPricing  map[string]*ModelPricing     // pricing per model
 	WithdrawHistory  []WithdrawRecord            // last N Lightning payouts from gateway
+	KarmaScore       int64                       // 30-day rolling karma score
+	KarmaTier        string                      // "", "bronze", "silver", "gold", "diamond"
+	FreeTierJobs     int                         // free tier jobs served (current period)
 }
 
 // wsMsg is the generic WebSocket message envelope used for all control traffic.
@@ -68,6 +71,7 @@ type wsMsg struct {
 	Model          string `json:"model,omitempty"`
 	VRAMRequiredMB int    `json:"vram_required_mb,omitempty"`
 	BuyerRegion    string `json:"buyer_region,omitempty"`
+	FreeTier       bool   `json:"free_tier,omitempty"`
 
 	// Heartbeat (node → gateway)
 	GPUUtilPct    int     `json:"gpu_util_pct,omitempty"`
@@ -91,6 +95,9 @@ type wsMsg struct {
 	BtcWeeklyAvg     float64 `json:"btc_weekly_avg,omitempty"`
 	BtcPriceStatus   string  `json:"btc_price_status,omitempty"`
 	BalanceSats      int64   `json:"balance_sats,omitempty"`
+	KarmaScore       int64   `json:"karma_score,omitempty"`
+	KarmaTier        string  `json:"karma_tier,omitempty"`
+	FreeTierJobs     int     `json:"free_tier_jobs,omitempty"`
 
 	// Job complete (gateway → node)
 	Tokens    int     `json:"tokens,omitempty"`
@@ -159,6 +166,8 @@ type Connector struct {
 	// Override in tests to point at a fake Ollama server.
 	ollamaBase string
 
+	contextLength int // num_ctx for Ollama; injected into proxy requests if buyer didn't set it
+
 	mu              sync.RWMutex
 	models          map[string]bool            // all registered models (set for O(1) lookup)
 	conn            *websocket.Conn
@@ -186,6 +195,20 @@ func (c *Connector) proxyBaseURL() string {
 		return c.proxyBase
 	}
 	return c.gatewayBase
+}
+
+// SetOllamaBase overrides the Ollama API base URL.
+func (c *Connector) SetOllamaBase(base string) {
+	c.mu.Lock()
+	c.ollamaBase = base
+	c.mu.Unlock()
+}
+
+// SetContextLength sets the num_ctx value injected into proxy requests.
+func (c *Connector) SetContextLength(n int) {
+	c.mu.Lock()
+	c.contextLength = n
+	c.mu.Unlock()
 }
 
 // ollamaURL returns the Ollama base URL.
@@ -412,7 +435,7 @@ func (c *Connector) fetchModelPricing(ctx context.Context) {
 	var result struct {
 		Data []struct {
 			ID      string        `json:"id"`
-			Pricing *ModelPricing `json:"pricing,omitempty"`
+			Pricing *ModelPricing `json:"owlrun_pricing,omitempty"`
 		} `json:"data"`
 	}
 	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
@@ -554,6 +577,9 @@ func (c *Connector) readLoop(ctx context.Context, conn *websocket.Conn) error {
 				Broadcasts:       msg.Broadcasts,
 				BalanceSats:      msg.BalanceSats,
 				WithdrawHistory:  msg.WithdrawHistory,
+				KarmaScore:      msg.KarmaScore,
+				KarmaTier:       msg.KarmaTier,
+				FreeTierJobs:    msg.FreeTierJobs,
 			}
 			c.mu.Unlock()
 			if c.onBalanceUpdate != nil && msg.BalanceSats > 0 {
@@ -664,6 +690,27 @@ func (c *Connector) proxyJob(ctx context.Context, conn *websocket.Conn, jobID st
 		return fmt.Errorf("proxy fetch read: %w", err)
 	}
 	log.Printf("owlrun: gateway: job %s buyer request received (%d bytes)", jobID, len(buyerBody))
+
+	// Inject num_ctx if configured and buyer didn't specify it.
+	c.mu.RLock()
+	ctxLen := c.contextLength
+	c.mu.RUnlock()
+	if ctxLen > 0 {
+		var parsed map[string]any
+		if json.Unmarshal(buyerBody, &parsed) == nil {
+			opts, _ := parsed["options"].(map[string]any)
+			if opts == nil {
+				opts = map[string]any{}
+			}
+			if _, hasCtx := opts["num_ctx"]; !hasCtx {
+				opts["num_ctx"] = ctxLen
+				parsed["options"] = opts
+				if patched, err := json.Marshal(parsed); err == nil {
+					buyerBody = patched
+				}
+			}
+		}
+	}
 
 	// Step 2: Forward buyer's request to local Ollama.
 	ollamaReq, err := http.NewRequestWithContext(ctx, http.MethodPost,

@@ -23,6 +23,7 @@ type Router struct {
 	referralCode     string
 	lightningAddress string
 	redeemThreshold  int
+	freeTierPct      int
 	region           string
 	version          string
 	gpuInfo          gpu.Info
@@ -33,7 +34,7 @@ type Router struct {
 // onComplete is called (from a goroutine) when a job_complete message arrives
 // from the gateway — use it to call earnings.Tracker.Record().
 func New(
-	gatewayBase, proxyBase, apiKey, nodeID, wallet, referralCode, lightningAddress string, redeemThreshold int, region, version string,
+	gatewayBase, proxyBase, apiKey, nodeID, wallet, referralCode, lightningAddress string, redeemThreshold, freeTierPct int, region, version string,
 	gpuInfo gpu.Info,
 	getStats StatsFunc,
 	onComplete JobCompleteFunc,
@@ -63,6 +64,7 @@ func New(
 		referralCode:     referralCode,
 		lightningAddress: lightningAddress,
 		redeemThreshold:  redeemThreshold,
+		freeTierPct:      freeTierPct,
 		region:           region,
 		version:      version,
 		gpuInfo:      gpuInfo,
@@ -71,7 +73,7 @@ func New(
 
 	// Pre-build the registration payload (no model loaded yet; models updated
 	// via SetModel before Connect is called).
-	payload, err := BuildRegistration(nodeID, apiKey, wallet, referralCode, lightningAddress, redeemThreshold, region, version, gpuInfo, nil)
+	payload, err := BuildRegistration(nodeID, apiKey, wallet, referralCode, lightningAddress, redeemThreshold, freeTierPct, region, version, gpuInfo, nil)
 	if err != nil {
 		log.Printf("owlrun: gateway: build registration payload: %v", err)
 	} else {
@@ -87,7 +89,7 @@ func New(
 func (r *Router) SetModels(models []string) {
 	r.conn.SetModels(models)
 
-	payload, err := BuildRegistration(r.nodeID, r.apiKey, r.wallet, r.referralCode, r.lightningAddress, r.redeemThreshold, r.region, r.version, r.gpuInfo, models)
+	payload, err := BuildRegistration(r.nodeID, r.apiKey, r.wallet, r.referralCode, r.lightningAddress, r.redeemThreshold, r.freeTierPct, r.region, r.version, r.gpuInfo, models)
 	if err != nil {
 		log.Printf("owlrun: gateway: rebuild registration payload: %v", err)
 		return
@@ -106,7 +108,7 @@ func (r *Router) SetLightningAddress(addr string) {
 	r.lightningAddress = addr
 	// Rebuild registration with all current models.
 	models := r.currentModels()
-	payload, err := BuildRegistration(r.nodeID, r.apiKey, r.wallet, r.referralCode, r.lightningAddress, r.redeemThreshold, r.region, r.version, r.gpuInfo, models)
+	payload, err := BuildRegistration(r.nodeID, r.apiKey, r.wallet, r.referralCode, r.lightningAddress, r.redeemThreshold, r.freeTierPct, r.region, r.version, r.gpuInfo, models)
 	if err != nil {
 		log.Printf("owlrun: gateway: rebuild registration (lightning address): %v", err)
 		return
@@ -120,14 +122,38 @@ func (r *Router) SetLightningAddress(addr string) {
 func (r *Router) SetRedeemThreshold(threshold int) {
 	r.redeemThreshold = threshold
 	models := r.currentModels()
-	payload, err := BuildRegistration(r.nodeID, r.apiKey, r.wallet, r.referralCode, r.lightningAddress, r.redeemThreshold, r.region, r.version, r.gpuInfo, models)
+	payload, err := BuildRegistration(r.nodeID, r.apiKey, r.wallet, r.referralCode, r.lightningAddress, r.redeemThreshold, r.freeTierPct, r.region, r.version, r.gpuInfo, models)
 	if err != nil {
 		log.Printf("owlrun: gateway: rebuild registration (redeem threshold): %v", err)
 		return
 	}
 	r.conn.SetRegistration(payload)
-	log.Printf("owlrun: gateway: redeem threshold updated to %d sats, reconnecting", threshold)
+	log.Printf("owlrun: gateway: redeem threshold updated to %d mSats, reconnecting", threshold)
 	go r.conn.Reconnect()
+}
+
+// SetFreeTierPct updates the free tier donation percentage and re-registers.
+func (r *Router) SetFreeTierPct(pct int) {
+	r.freeTierPct = pct
+	models := r.currentModels()
+	payload, err := BuildRegistration(r.nodeID, r.apiKey, r.wallet, r.referralCode, r.lightningAddress, r.redeemThreshold, r.freeTierPct, r.region, r.version, r.gpuInfo, models)
+	if err != nil {
+		log.Printf("owlrun: gateway: rebuild registration (free tier): %v", err)
+		return
+	}
+	r.conn.SetRegistration(payload)
+	log.Printf("owlrun: gateway: free tier pct updated to %d%%, reconnecting", pct)
+	go r.conn.Reconnect()
+}
+
+// SetOllamaBase overrides the Ollama API base URL on the connector.
+func (r *Router) SetOllamaBase(base string) {
+	r.conn.SetOllamaBase(base)
+}
+
+// SetContextLength updates the Ollama num_ctx on the connector.
+func (r *Router) SetContextLength(n int) {
+	r.conn.SetContextLength(n)
 }
 
 // currentModels returns the list of registered model tags from the connector.

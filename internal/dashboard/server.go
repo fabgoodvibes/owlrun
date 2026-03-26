@@ -64,8 +64,8 @@ type Status struct {
 		JobsToday        int     `json:"jobs_today"`
 		TokensToday      int     `json:"tokens_today"`
 		EarnedTodayUSD   float64 `json:"earned_today_usd"`
-		EarnedTodaySats  int64   `json:"earned_today_sats"`  // authoritative, 1-sat min applied (from gateway)
-		EarnedTotalSats  int64   `json:"earned_total_sats"`  // lifetime sats earned (from gateway)
+		EarnedTodaySats  int64   `json:"earned_today_sats"`  // authoritative, msats from gateway
+		EarnedTotalSats  int64   `json:"earned_total_sats"`  // lifetime msats earned (from gateway)
 		QueueDepthGlobal int     `json:"queue_depth_global"`
 	} `json:"gateway"`
 
@@ -78,6 +78,7 @@ type Status struct {
 
 	AvailableModels  []AvailableModel `json:"available_models,omitempty"`
 	Pulling          bool             `json:"pulling"` // true if download in progress
+	ContextLength    int              `json:"context_length"`
 	LightningAddress string           `json:"lightning_address"`
 	RedeemThreshold  int            `json:"redeem_threshold"`
 	BtcPrice         BtcPriceInfo   `json:"btc_price"`
@@ -110,9 +111,9 @@ type BroadcastMsg struct {
 
 // SatsWalletInfo is the provider's ecash wallet state for the dashboard.
 type SatsWalletInfo struct {
-	GatewaySats  int64              `json:"gateway_sats"`  // unclaimed on gateway
-	LocalSats    int64              `json:"local_sats"`    // claimed proofs stored locally
-	TotalSats    int64              `json:"total_sats"`    // gateway + local
+	GatewaySats  int64              `json:"gateway_sats"`  // unclaimed on gateway (msats)
+	LocalSats    int64              `json:"local_sats"`    // claimed proofs stored locally (msats)
+	TotalSats    int64              `json:"total_sats"`    // gateway + local (msats)
 	USDApprox    float64            `json:"usd_approx"`    // approximate USD value
 	ProofCount   int                `json:"proof_count"`   // number of local proofs
 	LastClaim    string             `json:"last_claim"`    // ISO timestamp
@@ -151,6 +152,9 @@ type SetRedeemThresholdFunc func(threshold int) error
 
 // SetJobModeFunc switches the job acceptance mode ("never", "idle", "always").
 type SetJobModeFunc func(mode string) error
+
+// SetContextLengthFunc changes the Ollama num_ctx and reloads the model.
+type SetContextLengthFunc func(ctxLen int) error
 
 // SwitchModelFunc switches the active primary model. If the model is already
 // installed, it loads it into VRAM and re-registers. Returns error if not installed.
@@ -193,6 +197,7 @@ type Server struct {
 	removeModel    atomic.Pointer[RemoveModelFunc]
 	pulling        atomic.Bool // true while a pull is in progress
 	setJobMode     atomic.Pointer[SetJobModeFunc]
+	setCtxLen      atomic.Pointer[SetContextLengthFunc]
 }
 
 // New creates a dashboard Server on the given port.
@@ -249,6 +254,11 @@ func (s *Server) SetJobModeSetter(fn SetJobModeFunc) {
 	s.setJobMode.Store(&fn)
 }
 
+// SetContextLengthSetter wires the context length change function.
+func (s *Server) SetContextLengthSetter(fn SetContextLengthFunc) {
+	s.setCtxLen.Store(&fn)
+}
+
 // Start launches the HTTP server in the background.
 // The listener is bound before returning so the port is ready for connections.
 func (s *Server) Start() error {
@@ -264,6 +274,7 @@ func (s *Server) Start() error {
 	mux.HandleFunc("/api/model-size", s.handleModelSize)
 	mux.HandleFunc("/api/remove-model", s.handleRemoveModel)
 	mux.HandleFunc("/api/set-job-mode", s.handleSetJobMode)
+	mux.HandleFunc("/api/set-context-length", s.handleSetContextLength)
 	addr := fmt.Sprintf("127.0.0.1:%d", s.port)
 	ln, err := net.Listen("tcp", addr)
 	if err != nil {
@@ -477,6 +488,46 @@ func (s *Server) handleSetJobMode(w http.ResponseWriter, r *http.Request) {
 	}
 
 	json.NewEncoder(w).Encode(map[string]any{"status": "ok", "mode": req.Mode})
+}
+
+func (s *Server) handleSetContextLength(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Content-Type", "application/json")
+	w.Header().Set("Access-Control-Allow-Origin", "*")
+
+	if r.Method != http.MethodPost {
+		w.WriteHeader(http.StatusMethodNotAllowed)
+		json.NewEncoder(w).Encode(map[string]string{"error": "POST required"})
+		return
+	}
+
+	fn := s.setCtxLen.Load()
+	if fn == nil {
+		w.WriteHeader(http.StatusServiceUnavailable)
+		json.NewEncoder(w).Encode(map[string]string{"error": "not ready"})
+		return
+	}
+
+	var req struct {
+		ContextLength int `json:"context_length"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		w.WriteHeader(http.StatusBadRequest)
+		json.NewEncoder(w).Encode(map[string]string{"error": "invalid request"})
+		return
+	}
+	if req.ContextLength < 2048 || req.ContextLength > 262144 {
+		w.WriteHeader(http.StatusBadRequest)
+		json.NewEncoder(w).Encode(map[string]string{"error": "context_length must be between 2048 and 262144"})
+		return
+	}
+
+	if err := (*fn)(req.ContextLength); err != nil {
+		w.WriteHeader(http.StatusInternalServerError)
+		json.NewEncoder(w).Encode(map[string]string{"error": err.Error()})
+		return
+	}
+
+	json.NewEncoder(w).Encode(map[string]any{"status": "ok", "context_length": req.ContextLength})
 }
 
 func (s *Server) handleSwitchModel(w http.ResponseWriter, r *http.Request) {
@@ -924,11 +975,32 @@ const dashboardHTML = `<!DOCTYPE html>
         <div id="job-mode-hint" style="font-size:12px;color:var(--text-muted);margin-top:6px"></div>
       </div>
 
+      <!-- Context length selector -->
+      <div style="margin-top:16px;padding-top:14px;border-top:1px solid var(--border)">
+        <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px">
+          <span style="font-size:14px;color:#d0d0e0">Context length</span>
+          <span id="ctx-len-label" style="font-size:13px;color:var(--text-muted)">8192</span>
+        </div>
+        <div style="display:flex;gap:6px">
+          <select id="ctx-len-select" onchange="setContextLength(this.value)" style="flex:1;padding:8px 10px;border-radius:6px;border:1px solid var(--border-active);background:var(--bg-card-hover);color:var(--text);font-size:13px;cursor:pointer;appearance:auto">
+            <option value="2048">2K (2048)</option>
+            <option value="4096">4K (4096)</option>
+            <option value="8192" selected>8K (8192)</option>
+            <option value="16384">16K (16384)</option>
+            <option value="32768">32K (32768)</option>
+            <option value="65536">64K (65536)</option>
+            <option value="131072">128K (131072)</option>
+            <option value="262144">256K (262144)</option>
+          </select>
+        </div>
+        <div style="font-size:12px;color:var(--text-muted);margin-top:6px">Higher values use more VRAM. Model reloads on change.</div>
+      </div>
+
       <!-- Earnings stats -->
       <div style="margin-top:16px;padding-top:14px;border-top:1px solid var(--border)">
         <div class="stat">
           <span class="stat-label">Pending earnings</span>
-          <span class="stat-value" id="sats-gateway" style="color:#f7931a;font-weight:bold">0 sats</span>
+          <span class="stat-value" id="sats-gateway" style="color:#f7931a;font-weight:bold">0 mSats</span>
         </div>
         <div class="stat">
           <span class="stat-label">USD approx</span>
@@ -936,11 +1008,11 @@ const dashboardHTML = `<!DOCTYPE html>
         </div>
         <div class="stat">
           <span class="stat-label">Today's earnings</span>
-          <span class="stat-value" id="wallet-today-sats" style="color:#22c55e">0 sats</span>
+          <span class="stat-value" id="wallet-today-sats" style="color:#22c55e">0 mSats</span>
         </div>
         <div class="stat">
           <span class="stat-label">Total withdrawn</span>
-          <span class="stat-value" id="wallet-withdrawn">0 sats</span>
+          <span class="stat-value" id="wallet-withdrawn">0 mSats</span>
         </div>
         <div class="stat">
           <span class="stat-label">Next payout est.</span>
@@ -965,7 +1037,7 @@ const dashboardHTML = `<!DOCTYPE html>
           <div style="margin-top:12px;padding:12px;background:var(--bg);border-radius:8px">
             <div class="stat">
               <span class="stat-label">Local ecash</span>
-              <span class="stat-value" id="ecash-local-sats" style="color:#f7931a">0 sats</span>
+              <span class="stat-value" id="ecash-local-sats" style="color:#f7931a">0 mSats</span>
             </div>
             <div class="stat">
               <span class="stat-label">Proofs</span>
@@ -1012,12 +1084,12 @@ const dashboardHTML = `<!DOCTYPE html>
 
   <div class="card">
     <div class="card-title">Earnings</div>
-    <div class="earnings-big" id="total-sats">0 sats</div>
+    <div class="earnings-big" id="total-sats">0 mSats</div>
     <div style="font-size:18px;color:var(--text-dim);font-variant-numeric:tabular-nums;margin-top:2px" id="total-usd">~$0.00</div>
     <div style="margin-top:14px;padding-top:12px;border-top:1px solid var(--border)">
       <div class="stat">
         <span class="stat-label" style="font-size:17px">Today</span>
-        <span class="stat-value" id="today-sats" style="color:var(--green);font-size:20px;font-weight:700">0 sats</span>
+        <span class="stat-value" id="today-sats" style="color:var(--green);font-size:20px;font-weight:700">0 mSats</span>
       </div>
       <div style="text-align:right;margin-top:2px">
         <span id="today-usd" style="font-size:14px;color:var(--text-muted)">~$0.00</span>
@@ -1224,20 +1296,20 @@ function update(d) {
   }
   document.getElementById('state-badge').innerHTML = badgeHtml;
 
-  // Earnings: sats as hero number, USD below
-  // Use gateway's earned_sats fields when available (authoritative, 1-sat minimum applied).
-  // Fallback: max(usd→sats conversion, jobs count) since every job earns at least 1 sat (Decision #50).
+  // Earnings: mSats as hero number, USD below
+  // Gateway now sends millisats in earned_today_sats / earned_total_sats fields.
+  // Fallback: usd→msats conversion (100B msats/BTC).
   var btcRate = (d.btc_price && d.btc_price.live_usd) ? d.btc_price.live_usd : 0;
-  function usdToSatsRaw(usd) { return btcRate > 0 ? usd / btcRate * 100000000 : 0; }
-  var todaySatsRaw = d.gateway.earned_today_sats || Math.max(usdToSatsRaw(d.earnings.today_usd), d.gateway.jobs_today || 0);
-  var totalSatsRaw = d.gateway.earned_total_sats || Math.max(usdToSatsRaw(d.earnings.total_usd), todaySatsRaw);
-  function fmtSatsEarnings(raw) {
-    if (raw === 0) return '0 sats';
-    return Math.round(raw).toLocaleString() + ' sats';
+  function usdToMsatsRaw(usd) { return btcRate > 0 ? usd / btcRate * 100000000000 : 0; }
+  var todayMsats = d.gateway.earned_today_sats || Math.max(usdToMsatsRaw(d.earnings.today_usd), (d.gateway.jobs_today || 0) * 10);
+  var totalMsats = d.gateway.earned_total_sats || Math.max(usdToMsatsRaw(d.earnings.total_usd), todayMsats);
+  function fmtMsats(raw) {
+    if (raw === 0) return '0 mSats';
+    return Math.round(raw).toLocaleString() + ' mSats';
   }
-  document.getElementById('total-sats').textContent = fmtSatsEarnings(totalSatsRaw);
+  document.getElementById('total-sats').textContent = fmtMsats(totalMsats);
   document.getElementById('total-usd').textContent = '~' + fmt2(d.earnings.total_usd);
-  document.getElementById('today-sats').textContent = fmtSatsEarnings(todaySatsRaw);
+  document.getElementById('today-sats').textContent = fmtMsats(todayMsats);
   document.getElementById('today-usd').textContent = '~' + fmt2(d.earnings.today_usd);
 
   const g = d.gpu;
@@ -1345,7 +1417,7 @@ function update(d) {
   // Wallet (Lightning address)
   var lnAddr = d.lightning_address || '';
   var sw = d.sats_wallet;
-  function fmtSats(v) { return v ? v.toLocaleString() + ' sats' : '0 sats'; }
+  function fmtSats(v) { return v ? v.toLocaleString() + ' mSats' : '0 mSats'; }
   if (lnAddr) {
     document.getElementById('wallet-setup').style.display = 'none';
     document.getElementById('wallet-active').style.display = '';
@@ -1363,12 +1435,20 @@ function update(d) {
       updateThresholdDisplay(thr);
     }
     if (thr < 100) { document.getElementById('unlock-50').checked = true; slider.min = '50'; }
+    // Context length
+    var ctxLen = d.context_length || 8192;
+    var ctxSelect = document.getElementById('ctx-len-select');
+    if (document.activeElement !== ctxSelect) {
+      ctxSelect.value = String(ctxLen);
+      document.getElementById('ctx-len-label').textContent = ctxLen;
+    }
+
     // Earnings stats
     document.getElementById('wallet-today-sats').textContent = fmtSats(sw.gateway_sats);
     document.getElementById('wallet-withdrawn').textContent = fmtSats(sw.local_sats);
     if (sw.gateway_sats > 0 && thr > 0) {
       var pct = Math.min(100, Math.round(sw.gateway_sats / thr * 100));
-      document.getElementById('wallet-next-payout').textContent = pct + '% to threshold (' + thr + ' sats)';
+      document.getElementById('wallet-next-payout').textContent = pct + '% to threshold (' + thr + ' mSats)';
     } else {
       document.getElementById('wallet-next-payout').textContent = '—';
     }
@@ -1557,6 +1637,13 @@ function applyJobModeUI(mode) {
   document.getElementById('job-mode-hint').textContent = hints[mode] || '';
 }
 
+async function setContextLength(val) {
+  try {
+    var r = await fetch('/api/set-context-length', {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({context_length:parseInt(val)})});
+    if (r.ok) { document.getElementById('ctx-len-label').textContent = val; poll(); }
+  } catch(e) {}
+}
+
 async function poll() {
   try {
     const r = await fetch('/api/status');
@@ -1575,7 +1662,7 @@ async function claimEcash() {
     var data = await r.json();
     if (data.error) { alert('Claim failed: ' + data.error); return; }
     document.getElementById('claim-token').value = data.token;
-    document.getElementById('claim-amount').textContent = data.amount_sats ? data.amount_sats.toLocaleString() + ' sats claimed' : '';
+    document.getElementById('claim-amount').textContent = data.amount_sats ? data.amount_sats.toLocaleString() + ' mSats claimed' : '';
     document.getElementById('claim-result').style.display = '';
   } catch(e) { alert('Claim failed: ' + e.message); }
   finally { btn.disabled = false; btn.textContent = 'Claim All'; }

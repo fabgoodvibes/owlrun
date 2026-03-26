@@ -39,6 +39,7 @@ type AccountConfig struct {
 	ReferralCode     string // affiliate referral code (owlr_ref_<code>), optional
 	LightningAddress string // Lightning address for BTC payouts (e.g. user@walletofsatoshi.com), optional
 	RedeemThreshold  int    // sats threshold for auto-payout via Lightning (default 500)
+	FreeTierPct      int    // percentage of capacity donated to free tier (0-100, default 0)
 }
 
 type MarketplaceConfig struct {
@@ -55,9 +56,10 @@ type MarketplaceConfig struct {
 }
 
 type InferenceConfig struct {
-	ModelAuto  bool
-	MaxVRAMPct int
-	Model      string // override: pin a specific model tag; empty = auto-select
+	ModelAuto     bool
+	MaxVRAMPct    int
+	Model         string // override: pin a specific model tag; empty = auto-select
+	ContextLength int    // Ollama num_ctx; 0 = use default (8192)
 }
 
 type IdleConfig struct {
@@ -93,8 +95,9 @@ func defaults() Config {
 			AllowOverride: true,
 		},
 		Inference: InferenceConfig{
-			ModelAuto:  true,
-			MaxVRAMPct: 80,
+			ModelAuto:     true,
+			MaxVRAMPct:    80,
+			ContextLength: 8192,
 		},
 		Idle: IdleConfig{
 			TriggerMinutes: 10,
@@ -189,6 +192,34 @@ func SaveRedeemThreshold(threshold int) error {
 	return f.SaveTo(path)
 }
 
+// SaveFreeTierPct persists the free tier donation percentage to the config file.
+func SaveFreeTierPct(pct int) error {
+	path := Path()
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		return err
+	}
+	f, err := ini.LooseLoad(path)
+	if err != nil {
+		f = ini.Empty()
+	}
+	f.Section("account").Key("free_tier_pct").SetValue(fmt.Sprintf("%d", pct))
+	return f.SaveTo(path)
+}
+
+// SaveContextLength persists the Ollama context length to the config file.
+func SaveContextLength(ctxLen int) error {
+	path := Path()
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		return err
+	}
+	f, err := ini.LooseLoad(path)
+	if err != nil {
+		f = ini.Empty()
+	}
+	f.Section("inference").Key("context_length").SetValue(fmt.Sprintf("%d", ctxLen))
+	return f.SaveTo(path)
+}
+
 // SaveJobMode persists the job acceptance mode to the config file.
 func SaveJobMode(mode string) error {
 	path := Path()
@@ -246,6 +277,7 @@ func bootstrap(cfg *Config) {
 	inf := f.Section("inference")
 	inf.Key("model_auto").SetValue("true")
 	inf.Key("max_vram_pct").SetValue("80")
+	inf.Key("context_length").SetValue("8192")
 
 	idl := f.Section("idle")
 	idl.Key("trigger_minutes").SetValue("10")
@@ -283,6 +315,7 @@ func Load() (Config, error) {
 		cfg.Account.ReferralCode = sec.Key("referral_code").String()
 		cfg.Account.LightningAddress = sec.Key("lightning_address").String()
 		cfg.Account.RedeemThreshold = sec.Key("redeem_threshold").MustInt(500)
+		cfg.Account.FreeTierPct = sec.Key("free_tier_pct").MustInt(0)
 	}
 
 	if sec, err := f.GetSection("marketplace"); err == nil {
@@ -305,6 +338,7 @@ func Load() (Config, error) {
 		cfg.Inference.ModelAuto = sec.Key("model_auto").MustBool(true)
 		cfg.Inference.MaxVRAMPct = sec.Key("max_vram_pct").MustInt(80)
 		cfg.Inference.Model = sec.Key("model").String()
+		cfg.Inference.ContextLength = sec.Key("context_length").MustInt(8192)
 	}
 
 	if sec, err := f.GetSection("idle"); err == nil {

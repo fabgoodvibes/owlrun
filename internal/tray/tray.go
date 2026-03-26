@@ -62,6 +62,7 @@ type Agent struct {
 	gateway        *marketplace.Router
 	ecash          *wallet.Wallet
 	dash           *dashboard.Server
+	mockMode       bool
 
 	// Tray menu items updated at runtime
 	mStatus    *systray.MenuItem
@@ -82,7 +83,7 @@ type Agent struct {
 
 // Run detects the GPU, then starts the system tray. Blocks until Quit.
 // Must be called from the main goroutine.
-func Run(cfg config.Config, dash *dashboard.Server) {
+func Run(cfg config.Config, dash *dashboard.Server, mockMode bool) {
 	nodeID := config.EnsureNodeID(&cfg)
 	config.EnsureAPIKey(&cfg)
 	info := gpu.Detect()
@@ -102,6 +103,7 @@ func Run(cfg config.Config, dash *dashboard.Server) {
 		ecash:      w,
 		ollamaMgr:  inference.New(info),
 		dash:       dash,
+		mockMode:   mockMode,
 	}
 
 	gw := marketplace.New(
@@ -136,6 +138,13 @@ func Run(cfg config.Config, dash *dashboard.Server) {
 		},
 	)
 	a.gateway = gw
+
+	// Set initial context length from config.
+	if cfg.Inference.ContextLength > 0 {
+		a.ollamaMgr.SetContextLength(cfg.Inference.ContextLength)
+		gw.SetContextLength(cfg.Inference.ContextLength)
+	}
+
 	systray.Run(a.onReady, a.onExit)
 }
 
@@ -227,6 +236,25 @@ func (a *Agent) onReady() {
 				return err
 			}
 			a.setJobMode(mode)
+			return nil
+		})
+		a.dash.SetContextLengthSetter(func(ctxLen int) error {
+			if err := config.SaveContextLength(ctxLen); err != nil {
+				return err
+			}
+			a.mu.Lock()
+			a.cfg.Inference.ContextLength = ctxLen
+			model := a.model
+			a.mu.Unlock()
+			a.ollamaMgr.SetContextLength(ctxLen)
+			a.gateway.SetContextLength(ctxLen)
+			log.Printf("owlrun: context length changed to %d", ctxLen)
+			// Reload current model with new context length.
+			if model != "" {
+				if err := a.ollamaMgr.LoadModel(model); err != nil {
+					log.Printf("owlrun: reload model with new context length: %v", err)
+				}
+			}
 			return nil
 		})
 		a.dash.SetModelSwitcher(func(model string) error {
@@ -402,6 +430,40 @@ func (a *Agent) checkAndUpdateState() {
 // startEarning runs the full Ollama startup pipeline in a background goroutine.
 // On success it transitions to Ready/MissingWallet; on failure it goes to Error.
 func (a *Agent) startEarning() {
+	// Mock mode: start fake Ollama server, skip real Ollama entirely.
+	if a.mockMode {
+		mockSrv, err := inference.StartMockOllama()
+		if err != nil {
+			log.Printf("owlrun: mock ollama failed: %v", err)
+			a.mu.Lock()
+			a.starting = false
+			a.state = StateError
+			a.errorDetail = "Mock Ollama failed to start: " + err.Error()
+			a.refreshMenuLocked()
+			a.mu.Unlock()
+			return
+		}
+		mockAddr := "http://" + mockSrv.Addr
+		a.ollamaMgr.SetHost(mockAddr)
+		a.gateway.SetOllamaBase(mockAddr)
+		log.Printf("owlrun: mock mode — using fake model %s on %s", inference.MockModel(), mockAddr)
+
+		a.mu.Lock()
+		a.model = inference.MockModel()
+		a.starting = false
+		if config.NeedsWallet(&a.cfg) {
+			a.state = StateMissingWallet
+		} else {
+			a.state = StateReady
+		}
+		a.refreshMenuLocked()
+		a.mu.Unlock()
+		a.gateway.SetModels([]string{inference.MockModel()})
+		a.gateway.Connect()
+		log.Printf("owlrun: mock mode ready — connecting to gateway")
+		return
+	}
+
 	if err := a.ollamaMgr.EnsureInstalled(); err != nil {
 		log.Printf("owlrun: install ollama: %v", err)
 		a.mu.Lock()
@@ -739,6 +801,7 @@ func (a *Agent) statusSnapshot() dashboard.Status {
 	s.Gateway.QueueDepthGlobal = gwStats.QueueDepthGlobal
 	s.LightningAddress = a.cfg.Account.LightningAddress
 	s.RedeemThreshold = a.cfg.Account.RedeemThreshold
+	s.ContextLength = a.cfg.Inference.ContextLength
 
 	// Model pricing from gateway
 	if gwStats.ModelPricing != nil {
