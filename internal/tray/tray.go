@@ -115,6 +115,7 @@ func Run(cfg config.Config, dash *dashboard.Server, mockMode bool) {
 		cfg.Account.ReferralCode,
 		cfg.Account.LightningAddress,
 		cfg.Account.RedeemThreshold,
+		cfg.Account.FreeTierPct,
 		cfg.Marketplace.Region,
 		buildinfo.Version,
 		info,
@@ -236,6 +237,16 @@ func (a *Agent) onReady() {
 				return err
 			}
 			a.setJobMode(mode)
+			return nil
+		})
+		a.dash.SetFreeTierPctSetter(func(pct int) error {
+			if err := config.SaveFreeTierPct(pct); err != nil {
+				return err
+			}
+			a.mu.Lock()
+			a.cfg.Account.FreeTierPct = pct
+			a.mu.Unlock()
+			a.gateway.SetFreeTierPct(pct)
 			return nil
 		})
 		a.dash.SetContextLengthSetter(func(ctxLen int) error {
@@ -802,6 +813,10 @@ func (a *Agent) statusSnapshot() dashboard.Status {
 	s.LightningAddress = a.cfg.Account.LightningAddress
 	s.RedeemThreshold = a.cfg.Account.RedeemThreshold
 	s.ContextLength = a.cfg.Inference.ContextLength
+	s.FreeTierPct = a.cfg.Account.FreeTierPct
+	s.KarmaScore = gwStats.KarmaScore
+	s.KarmaTier = gwStats.KarmaTier
+	s.FreeTierJobs = gwStats.FreeTierJobs
 
 	// Model pricing from gateway
 	if gwStats.ModelPricing != nil {

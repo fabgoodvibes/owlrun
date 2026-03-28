@@ -79,6 +79,10 @@ type Status struct {
 	AvailableModels  []AvailableModel `json:"available_models,omitempty"`
 	Pulling          bool             `json:"pulling"` // true if download in progress
 	ContextLength    int              `json:"context_length"`
+	FreeTierPct      int              `json:"free_tier_pct"`
+	KarmaScore       int64            `json:"karma_score"`
+	KarmaTier        string           `json:"karma_tier"`
+	FreeTierJobs     int              `json:"free_tier_jobs"`
 	LightningAddress string           `json:"lightning_address"`
 	RedeemThreshold  int            `json:"redeem_threshold"`
 	BtcPrice         BtcPriceInfo   `json:"btc_price"`
@@ -156,6 +160,9 @@ type SetJobModeFunc func(mode string) error
 // SetContextLengthFunc changes the Ollama num_ctx and reloads the model.
 type SetContextLengthFunc func(ctxLen int) error
 
+// SetFreeTierPctFunc changes the free tier donation percentage and re-registers.
+type SetFreeTierPctFunc func(pct int) error
+
 // SwitchModelFunc switches the active primary model. If the model is already
 // installed, it loads it into VRAM and re-registers. Returns error if not installed.
 type SwitchModelFunc func(model string) error
@@ -198,6 +205,7 @@ type Server struct {
 	pulling        atomic.Bool // true while a pull is in progress
 	setJobMode     atomic.Pointer[SetJobModeFunc]
 	setCtxLen      atomic.Pointer[SetContextLengthFunc]
+	setFreeTier    atomic.Pointer[SetFreeTierPctFunc]
 }
 
 // New creates a dashboard Server on the given port.
@@ -259,6 +267,11 @@ func (s *Server) SetContextLengthSetter(fn SetContextLengthFunc) {
 	s.setCtxLen.Store(&fn)
 }
 
+// SetFreeTierPctSetter wires the free tier percentage change function.
+func (s *Server) SetFreeTierPctSetter(fn SetFreeTierPctFunc) {
+	s.setFreeTier.Store(&fn)
+}
+
 // Start launches the HTTP server in the background.
 // The listener is bound before returning so the port is ready for connections.
 func (s *Server) Start() error {
@@ -275,6 +288,7 @@ func (s *Server) Start() error {
 	mux.HandleFunc("/api/remove-model", s.handleRemoveModel)
 	mux.HandleFunc("/api/set-job-mode", s.handleSetJobMode)
 	mux.HandleFunc("/api/set-context-length", s.handleSetContextLength)
+	mux.HandleFunc("/api/set-free-tier", s.handleSetFreeTier)
 	addr := fmt.Sprintf("127.0.0.1:%d", s.port)
 	ln, err := net.Listen("tcp", addr)
 	if err != nil {
@@ -528,6 +542,46 @@ func (s *Server) handleSetContextLength(w http.ResponseWriter, r *http.Request) 
 	}
 
 	json.NewEncoder(w).Encode(map[string]any{"status": "ok", "context_length": req.ContextLength})
+}
+
+func (s *Server) handleSetFreeTier(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Content-Type", "application/json")
+	w.Header().Set("Access-Control-Allow-Origin", "*")
+
+	if r.Method != http.MethodPost {
+		w.WriteHeader(http.StatusMethodNotAllowed)
+		json.NewEncoder(w).Encode(map[string]string{"error": "POST required"})
+		return
+	}
+
+	fn := s.setFreeTier.Load()
+	if fn == nil {
+		w.WriteHeader(http.StatusServiceUnavailable)
+		json.NewEncoder(w).Encode(map[string]string{"error": "not ready"})
+		return
+	}
+
+	var req struct {
+		Pct int `json:"pct"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		w.WriteHeader(http.StatusBadRequest)
+		json.NewEncoder(w).Encode(map[string]string{"error": "invalid request"})
+		return
+	}
+	if req.Pct < 0 || req.Pct > 100 {
+		w.WriteHeader(http.StatusBadRequest)
+		json.NewEncoder(w).Encode(map[string]string{"error": "pct must be between 0 and 100"})
+		return
+	}
+
+	if err := (*fn)(req.Pct); err != nil {
+		w.WriteHeader(http.StatusInternalServerError)
+		json.NewEncoder(w).Encode(map[string]string{"error": err.Error()})
+		return
+	}
+
+	json.NewEncoder(w).Encode(map[string]any{"status": "ok", "free_tier_pct": req.Pct})
 }
 
 func (s *Server) handleSwitchModel(w http.ResponseWriter, r *http.Request) {
@@ -973,6 +1027,33 @@ const dashboardHTML = `<!DOCTYPE html>
           <button onclick="setJobMode('never')" id="jm-never" style="flex:1;padding:8px 0;border-radius:6px;border:1px solid var(--border-active);background:var(--bg-card-hover);color:var(--text);cursor:pointer;font-size:13px;font-weight:600;transition:all .15s">Never</button>
         </div>
         <div id="job-mode-hint" style="font-size:12px;color:var(--text-muted);margin-top:6px"></div>
+      </div>
+
+      <!-- Karma & Free Tier -->
+      <div style="margin-top:16px;padding-top:14px;border-top:1px solid var(--border)">
+        <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:10px">
+          <span style="font-size:14px;color:#d0d0e0">Karma</span>
+          <span id="karma-badge" style="font-size:11px;padding:2px 8px;border-radius:4px;font-weight:700;text-transform:uppercase"></span>
+        </div>
+        <div class="stat">
+          <span class="stat-label">Karma score</span>
+          <span class="stat-value" id="karma-score">0</span>
+        </div>
+        <div class="stat">
+          <span class="stat-label">Free tier jobs served</span>
+          <span class="stat-value" id="free-tier-jobs">0</span>
+        </div>
+        <div style="margin-top:10px">
+          <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:6px">
+            <span style="font-size:13px;color:var(--text-muted)">Donate to free tier</span>
+            <span id="free-tier-value" style="font-size:14px;color:#f7931a;font-weight:600">0%</span>
+          </div>
+          <input id="free-tier-slider" type="range" min="0" max="100" step="5" value="0" oninput="updateFreeTierDisplay(this.value)" onchange="saveFreeTierPct(this.value)" style="width:100%;accent-color:#f7931a;cursor:pointer" />
+          <div style="display:flex;justify-content:space-between;font-size:12px;color:var(--text-muted);margin-top:2px">
+            <span>0%</span><span>50%</span><span>100%</span>
+          </div>
+          <div style="font-size:12px;color:var(--text-muted);margin-top:6px">Share idle cycles with free-tier users. Higher donation = more karma = more paid traffic routed to you.</div>
+        </div>
       </div>
 
       <!-- Context length selector -->
@@ -1435,6 +1516,32 @@ function update(d) {
       updateThresholdDisplay(thr);
     }
     if (thr < 100) { document.getElementById('unlock-50').checked = true; slider.min = '50'; }
+    // Karma & Free Tier
+    var badge = document.getElementById('karma-badge');
+    var tier = d.karma_tier || '';
+    var tierColors = {bronze:'#cd7f32',silver:'#c0c0c0',gold:'#ffd700',diamond:'#b9f2ff'};
+    var tierBg = {bronze:'#cd7f3222',silver:'#c0c0c022',gold:'#ffd70022',diamond:'#b9f2ff22'};
+    if (tier && tierColors[tier]) {
+      badge.textContent = tier;
+      badge.style.color = tierColors[tier];
+      badge.style.background = tierBg[tier];
+      badge.style.border = '1px solid ' + tierColors[tier] + '44';
+      badge.style.display = '';
+    } else {
+      badge.textContent = 'none';
+      badge.style.color = 'var(--text-muted)';
+      badge.style.background = 'var(--bg-card-hover)';
+      badge.style.border = '1px solid var(--border)';
+      badge.style.display = '';
+    }
+    document.getElementById('karma-score').textContent = (d.karma_score || 0).toLocaleString();
+    document.getElementById('free-tier-jobs').textContent = (d.free_tier_jobs || 0).toLocaleString();
+    var ftSlider = document.getElementById('free-tier-slider');
+    if (document.activeElement !== ftSlider) {
+      ftSlider.value = d.free_tier_pct || 0;
+      updateFreeTierDisplay(d.free_tier_pct || 0);
+    }
+
     // Context length
     var ctxLen = d.context_length || 8192;
     var ctxSelect = document.getElementById('ctx-len-select');
@@ -1635,6 +1742,17 @@ function applyJobModeUI(mode) {
     }
   }
   document.getElementById('job-mode-hint').textContent = hints[mode] || '';
+}
+
+function updateFreeTierDisplay(val) {
+  document.getElementById('free-tier-value').textContent = val + '%';
+}
+
+async function saveFreeTierPct(val) {
+  try {
+    await fetch('/api/set-free-tier', {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({pct:parseInt(val)})});
+    poll();
+  } catch(e) {}
 }
 
 async function setContextLength(val) {

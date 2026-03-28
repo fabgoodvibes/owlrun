@@ -214,6 +214,7 @@ func buildDaemon(cfg config.Config, dash *dashboard.Server, mockMode bool) *sniD
 		cfg.Account.ReferralCode,
 		cfg.Account.LightningAddress,
 		cfg.Account.RedeemThreshold,
+		cfg.Account.FreeTierPct,
 		cfg.Marketplace.Region,
 		buildinfo.Version,
 		info,
@@ -272,6 +273,16 @@ func buildDaemon(cfg config.Config, dash *dashboard.Server, mockMode bool) *sniD
 				return err
 			}
 			d.setJobMode(mode)
+			return nil
+		})
+		dash.SetFreeTierPctSetter(func(pct int) error {
+			if err := config.SaveFreeTierPct(pct); err != nil {
+				return err
+			}
+			d.mu.Lock()
+			d.cfg.Account.FreeTierPct = pct
+			d.mu.Unlock()
+			d.gateway.SetFreeTierPct(pct)
 			return nil
 		})
 		dash.SetContextLengthSetter(func(ctxLen int) error {
@@ -888,6 +899,10 @@ func (d *sniDaemon) statusSnapshot() dashboard.Status {
 	s.LightningAddress = d.cfg.Account.LightningAddress
 	s.RedeemThreshold = d.cfg.Account.RedeemThreshold
 	s.ContextLength = d.cfg.Inference.ContextLength
+	s.FreeTierPct = d.cfg.Account.FreeTierPct
+	s.KarmaScore = gwStats.KarmaScore
+	s.KarmaTier = gwStats.KarmaTier
+	s.FreeTierJobs = gwStats.FreeTierJobs
 
 	// Model pricing from gateway
 	if gwStats.ModelPricing != nil {
