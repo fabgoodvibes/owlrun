@@ -243,8 +243,8 @@ func TestWallet_TokenHistory_MaxCapped(t *testing.T) {
 func TestWallet_AutoClaim_BelowMinimum(t *testing.T) {
 	w := newTestWallet(t, "https://gw.test", "owlr_prov_test")
 
-	// Should not attempt claim when below minimum (10 sats).
-	w.AutoClaim(5)
+	// Should not attempt claim when below minimum (10_000 msats = 10 sats).
+	w.AutoClaim(5_000)
 	// No error, no panic — just returns silently.
 }
 
@@ -255,7 +255,7 @@ func TestWallet_AutoClaim_Success(t *testing.T) {
 	srv := fakeGateway(t, "https://mint.test", proofs)
 	w := newTestWallet(t, srv.URL, "owlr_prov_test123")
 
-	w.AutoClaim(100) // above minSats=10
+	w.AutoClaim(100_000) // 100 sats in msats, above minMsats=10_000
 	// Should have claimed and saved.
 	if got := w.Balance(); got != 16 {
 		t.Errorf("Balance after AutoClaim = %d, want 16", got)
@@ -270,11 +270,11 @@ func TestWallet_AutoClaim_Cooldown(t *testing.T) {
 	w := newTestWallet(t, srv.URL, "owlr_prov_test123")
 
 	// First claim should work.
-	w.AutoClaim(100)
+	w.AutoClaim(100_000) // 100 sats in msats
 	bal1 := w.Balance()
 
 	// Second claim immediately should be skipped (cooldown).
-	w.AutoClaim(100)
+	w.AutoClaim(100_000)
 	bal2 := w.Balance()
 
 	if bal2 != bal1 {
