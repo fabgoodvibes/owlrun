@@ -1138,7 +1138,7 @@ const dashboardHTML = `<!DOCTYPE html>
       <div style="margin-top:16px;padding-top:14px;border-top:1px solid var(--border)">
         <div class="stat">
           <span class="stat-label">Pending earnings</span>
-          <span class="stat-value" id="sats-gateway" style="color:#f7931a;font-weight:bold">0 mSats</span>
+          <span class="stat-value" id="sats-gateway" style="color:#f7931a;font-weight:bold">0 sats</span>
         </div>
         <div class="stat">
           <span class="stat-label">USD approx</span>
@@ -1146,11 +1146,11 @@ const dashboardHTML = `<!DOCTYPE html>
         </div>
         <div class="stat">
           <span class="stat-label">Today's earnings</span>
-          <span class="stat-value" id="wallet-today-sats" style="color:#22c55e">0 mSats</span>
+          <span class="stat-value" id="wallet-today-sats" style="color:#22c55e">0 sats</span>
         </div>
         <div class="stat">
           <span class="stat-label">Total withdrawn</span>
-          <span class="stat-value" id="wallet-withdrawn">0 mSats</span>
+          <span class="stat-value" id="wallet-withdrawn">0 sats</span>
         </div>
         <div class="stat">
           <span class="stat-label">Next payout est.</span>
@@ -1175,7 +1175,7 @@ const dashboardHTML = `<!DOCTYPE html>
           <div style="margin-top:12px;padding:12px;background:var(--bg);border-radius:8px">
             <div class="stat">
               <span class="stat-label">Local ecash</span>
-              <span class="stat-value" id="ecash-local-sats" style="color:#f7931a">0 mSats</span>
+              <span class="stat-value" id="ecash-local-sats" style="color:#f7931a">0 sats</span>
             </div>
             <div class="stat">
               <span class="stat-label">Proofs</span>
@@ -1222,12 +1222,12 @@ const dashboardHTML = `<!DOCTYPE html>
 
   <div class="card">
     <div class="card-title">Earnings</div>
-    <div class="earnings-big" id="total-sats">0 mSats</div>
+    <div class="earnings-big" id="total-sats">0 sats</div>
     <div style="font-size:18px;color:var(--text-dim);font-variant-numeric:tabular-nums;margin-top:2px" id="total-usd">~$0.00</div>
     <div style="margin-top:14px;padding-top:12px;border-top:1px solid var(--border)">
       <div class="stat">
         <span class="stat-label" style="font-size:17px">Today</span>
-        <span class="stat-value" id="today-sats" style="color:var(--green);font-size:20px;font-weight:700">0 mSats</span>
+        <span class="stat-value" id="today-sats" style="color:var(--green);font-size:20px;font-weight:700">0 sats</span>
       </div>
       <div style="text-align:right;margin-top:2px">
         <span id="today-usd" style="font-size:14px;color:var(--text-muted)">~$0.00</span>
@@ -1434,16 +1434,18 @@ function update(d) {
   }
   document.getElementById('state-badge').innerHTML = badgeHtml;
 
-  // Earnings: mSats as hero number, USD below
-  // Gateway now sends millisats in earned_today_sats / earned_total_sats fields.
-  // Fallback: usd→msats conversion (100B msats/BTC).
+  // Earnings: sats as hero number, USD below
+  // Gateway sends millisats in earned_today_sats / earned_total_sats fields.
+  // Display converts msats → sats (÷1000) for human readability.
   var btcRate = (d.btc_price && d.btc_price.live_usd) ? d.btc_price.live_usd : 0;
   function usdToMsatsRaw(usd) { return btcRate > 0 ? usd / btcRate * 100000000000 : 0; }
   var todayMsats = d.gateway.earned_today_sats || Math.max(usdToMsatsRaw(d.earnings.today_usd), (d.gateway.jobs_today || 0) * 10);
   var totalMsats = d.gateway.earned_total_sats || Math.max(usdToMsatsRaw(d.earnings.total_usd), todayMsats);
   function fmtMsats(raw) {
-    if (raw === 0) return '0 mSats';
-    return Math.round(raw).toLocaleString() + ' mSats';
+    if (raw === 0) return '0 sats';
+    var sats = raw / 1000;
+    if (sats < 1) return sats.toFixed(1) + ' sats';
+    return Math.round(sats).toLocaleString() + ' sats';
   }
   document.getElementById('total-sats').textContent = fmtMsats(totalMsats);
   document.getElementById('total-usd').textContent = '~' + fmt2(d.earnings.total_usd);
@@ -1555,7 +1557,12 @@ function update(d) {
   // Wallet (Lightning address)
   var lnAddr = d.lightning_address || '';
   var sw = d.sats_wallet;
-  function fmtSats(v) { return v ? v.toLocaleString() + ' mSats' : '0 mSats'; }
+  function fmtSats(v) {
+    if (!v) return '0 sats';
+    var sats = v / 1000;
+    if (sats < 1) return sats.toFixed(1) + ' sats';
+    return Math.round(sats).toLocaleString() + ' sats';
+  }
   if (lnAddr) {
     document.getElementById('wallet-setup').style.display = 'none';
     document.getElementById('wallet-active').style.display = '';
@@ -1618,7 +1625,7 @@ function update(d) {
     document.getElementById('wallet-withdrawn').textContent = fmtSats(sw.local_sats);
     if (sw.gateway_sats > 0 && thr > 0) {
       var pct = Math.min(100, Math.round(sw.gateway_sats / thr * 100));
-      document.getElementById('wallet-next-payout').textContent = pct + '% to threshold (' + thr + ' mSats)';
+      document.getElementById('wallet-next-payout').textContent = pct + '% to threshold (' + Math.round(thr/1000) + ' sats)';
     } else {
       document.getElementById('wallet-next-payout').textContent = '—';
     }
@@ -1850,7 +1857,7 @@ async function claimEcash() {
     var data = await r.json();
     if (data.error) { alert('Claim failed: ' + data.error); return; }
     document.getElementById('claim-token').value = data.token;
-    document.getElementById('claim-amount').textContent = data.amount_sats ? data.amount_sats.toLocaleString() + ' mSats claimed' : '';
+    document.getElementById('claim-amount').textContent = data.amount_sats ? Math.round(data.amount_sats/1000).toLocaleString() + ' sats claimed' : '';
     document.getElementById('claim-result').style.display = '';
   } catch(e) { alert('Claim failed: ' + e.message); }
   finally { btn.disabled = false; btn.textContent = 'Claim All'; }

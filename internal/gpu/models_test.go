@@ -54,10 +54,10 @@ func TestRecommendModel_CPU(t *testing.T) {
 }
 
 func TestRecommendModel_HighVRAM(t *testing.T) {
-	// 48GB × 80% = 38.4GB usable → 70b-q2_K (28GB) fits, 70b-q4_K_M (42GB) doesn't.
+	// 48GB × 80% = 38.4GB usable → 70b-instruct-q2_K (28GB) fits, 70b-instruct-q4_K_M (42GB) doesn't.
 	got := RecommendModel(48, 80)
-	if got != "llama3.1:70b-q2_K" {
-		t.Errorf("RecommendModel(48, 80) = %q, want llama3.1:70b-q2_K", got)
+	if got != "llama3.1:70b-instruct-q2_K" {
+		t.Errorf("RecommendModel(48, 80) = %q, want llama3.1:70b-instruct-q2_K", got)
 	}
 }
 
