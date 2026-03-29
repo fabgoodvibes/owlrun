@@ -50,6 +50,10 @@ type Manager struct {
 	cmd           *exec.Cmd // nil if not running
 	contextLength int       // num_ctx for Ollama; 0 = Ollama default
 	host          string    // Ollama API base URL; empty = ollamaHost default
+
+	warmMu     sync.Mutex
+	warmModel  string            // model to keep warm
+	warmCancel context.CancelFunc // stops the keepalive goroutine
 }
 
 // New creates an inference Manager for the given GPU.
@@ -451,4 +455,57 @@ func (m *Manager) LoadModel(modelTag string) error {
 		return fmt.Errorf("load model: HTTP %d", resp.StatusCode)
 	}
 	return nil
+}
+
+// StartKeepWarm begins a background goroutine that pings Ollama every 4 minutes
+// with an empty prompt to prevent the model from being evicted from VRAM
+// (Ollama's default keep_alive is 5 minutes).
+func (m *Manager) StartKeepWarm(model string) {
+	m.warmMu.Lock()
+	defer m.warmMu.Unlock()
+
+	// Stop any existing keepalive first.
+	if m.warmCancel != nil {
+		m.warmCancel()
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	m.warmModel = model
+	m.warmCancel = cancel
+
+	go func() {
+		ticker := time.NewTicker(4 * time.Minute)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case <-ticker.C:
+				if err := m.LoadModel(model); err != nil {
+					log.Printf("owlrun: keep-warm ping failed: %v", err)
+				}
+			}
+		}
+	}()
+	log.Printf("owlrun: keep-warm enabled for %s (ping every 4m)", model)
+}
+
+// StopKeepWarm stops the background keepalive goroutine.
+func (m *Manager) StopKeepWarm() {
+	m.warmMu.Lock()
+	defer m.warmMu.Unlock()
+
+	if m.warmCancel != nil {
+		m.warmCancel()
+		m.warmCancel = nil
+		log.Printf("owlrun: keep-warm disabled for %s", m.warmModel)
+		m.warmModel = ""
+	}
+}
+
+// IsKeepWarmRunning returns true if the keep-warm goroutine is active.
+func (m *Manager) IsKeepWarmRunning() bool {
+	m.warmMu.Lock()
+	defer m.warmMu.Unlock()
+	return m.warmCancel != nil
 }

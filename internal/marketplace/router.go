@@ -156,6 +156,11 @@ func (r *Router) SetContextLength(n int) {
 	r.conn.SetContextLength(n)
 }
 
+// SetDebug enables or disables verbose debug logging on the connector.
+func (r *Router) SetDebug(on bool) {
+	r.conn.SetDebug(on)
+}
+
 // currentModels returns the list of registered model tags from the connector.
 func (r *Router) currentModels() []string {
 	r.conn.mu.RLock()

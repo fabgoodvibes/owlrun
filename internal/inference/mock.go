@@ -41,6 +41,7 @@ func StartMockOllama() (*MockServer, error) {
 	mux.HandleFunc("/api/tags", ms.handleTags)
 	mux.HandleFunc("/api/generate", ms.handleGenerate)
 	mux.HandleFunc("/api/chat", ms.handleChat)
+	mux.HandleFunc("/v1/chat/completions", ms.handleChatCompletions)
 	mux.HandleFunc("/api/pull", ms.handlePull)
 	mux.HandleFunc("/api/delete", ms.handleDelete)
 	mux.HandleFunc("/", ms.handleRoot)
@@ -147,6 +148,53 @@ func (ms *MockServer) handleChat(w http.ResponseWriter, r *http.Request) {
 	})
 	w.Write(final)
 	w.Write([]byte("\n"))
+	if flusher != nil {
+		flusher.Flush()
+	}
+}
+
+func (ms *MockServer) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Content-Type", "text/event-stream")
+	w.Header().Set("Cache-Control", "no-cache")
+	flusher, _ := w.(http.Flusher)
+
+	// Stream SSE chunks in OpenAI format.
+	words := []string{"This ", "is ", "a ", "mock ", "response ", "from ", "Owlrun ", "debug ", "mode."}
+	for i, word := range words {
+		chunk, _ := json.Marshal(map[string]any{
+			"id":      fmt.Sprintf("chatcmpl-mock-%d", i),
+			"object":  "chat.completion.chunk",
+			"model":   mockModel,
+			"choices": []map[string]any{{
+				"index": 0,
+				"delta": map[string]string{"content": word},
+			}},
+		})
+		fmt.Fprintf(w, "data: %s\n\n", chunk)
+		if flusher != nil {
+			flusher.Flush()
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+
+	// Final chunk with finish_reason + usage.
+	final, _ := json.Marshal(map[string]any{
+		"id":      "chatcmpl-mock-final",
+		"object":  "chat.completion.chunk",
+		"model":   mockModel,
+		"choices": []map[string]any{{
+			"index":         0,
+			"delta":         map[string]string{},
+			"finish_reason": "stop",
+		}},
+		"usage": map[string]int{
+			"prompt_tokens":     10,
+			"completion_tokens": len(words),
+			"total_tokens":      10 + len(words),
+		},
+	})
+	fmt.Fprintf(w, "data: %s\n\n", final)
+	fmt.Fprint(w, "data: [DONE]\n\n")
 	if flusher != nil {
 		flusher.Flush()
 	}

@@ -53,10 +53,12 @@ type MarketplaceConfig struct {
 	ExtraGateways []string // additional Owlrun-operated endpoints for redundancy
 	AllowOverride bool
 	Region        string // self-reported region; "auto" if unset (gateway resolves from IP)
+	Debug         bool   // verbose debug logging (default false)
 }
 
 type InferenceConfig struct {
 	ModelAuto     bool
+	KeepWarm      bool // periodic ping to prevent Ollama VRAM eviction (default true)
 	MaxVRAMPct    int
 	Model         string // override: pin a specific model tag; empty = auto-select
 	ContextLength int    // Ollama num_ctx; 0 = use default (8192)
@@ -96,6 +98,7 @@ func defaults() Config {
 		},
 		Inference: InferenceConfig{
 			ModelAuto:     true,
+			KeepWarm:      true,
 			MaxVRAMPct:    80,
 			ContextLength: 8192,
 		},
@@ -203,6 +206,24 @@ func SaveFreeTierPct(pct int) error {
 		f = ini.Empty()
 	}
 	f.Section("account").Key("free_tier_pct").SetValue(fmt.Sprintf("%d", pct))
+	return f.SaveTo(path)
+}
+
+// SaveKeepWarm persists the keep-warm setting to the config file.
+func SaveKeepWarm(on bool) error {
+	path := Path()
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		return err
+	}
+	f, err := ini.LooseLoad(path)
+	if err != nil {
+		f = ini.Empty()
+	}
+	v := "false"
+	if on {
+		v = "true"
+	}
+	f.Section("inference").Key("keep_warm").SetValue(v)
 	return f.SaveTo(path)
 }
 
@@ -332,10 +353,12 @@ func Load() (Config, error) {
 		cfg.Marketplace.ProxyBase = sec.Key("proxy_base").String()
 		cfg.Marketplace.Region = sec.Key("region").String()
 		cfg.Marketplace.AllowOverride = sec.Key("allow_override").MustBool(true)
+		cfg.Marketplace.Debug = sec.Key("debug").MustBool(false)
 	}
 
 	if sec, err := f.GetSection("inference"); err == nil {
 		cfg.Inference.ModelAuto = sec.Key("model_auto").MustBool(true)
+		cfg.Inference.KeepWarm = sec.Key("keep_warm").MustBool(true)
 		cfg.Inference.MaxVRAMPct = sec.Key("max_vram_pct").MustInt(80)
 		cfg.Inference.Model = sec.Key("model").String()
 		cfg.Inference.ContextLength = sec.Key("context_length").MustInt(8192)

@@ -166,7 +166,8 @@ type Connector struct {
 	// Override in tests to point at a fake Ollama server.
 	ollamaBase string
 
-	contextLength int // num_ctx for Ollama; injected into proxy requests if buyer didn't set it
+	contextLength int  // num_ctx for Ollama; injected into proxy requests if buyer didn't set it
+	debug         bool // verbose debug logging (off by default)
 
 	mu              sync.RWMutex
 	models          map[string]bool            // all registered models (set for O(1) lookup)
@@ -217,6 +218,13 @@ func (c *Connector) ollamaURL() string {
 		return c.ollamaBase
 	}
 	return "http://localhost:11434"
+}
+
+// SetDebug enables or disables verbose debug logging.
+func (c *Connector) SetDebug(on bool) {
+	c.mu.Lock()
+	c.debug = on
+	c.mu.Unlock()
 }
 
 // NewConnector creates a Connector. Call Connect() to start the WS lifecycle.
@@ -382,6 +390,9 @@ func (c *Connector) register(ctx context.Context) error {
 	}
 
 	url := c.gatewayBase + "/v1/gateway/register"
+	if c.debug {
+		log.Printf("owlrun: [debug] register POST %s (payload %d bytes)", url, len(payload))
+	}
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(payload))
 	if err != nil {
 		return err
@@ -691,20 +702,43 @@ func (c *Connector) proxyJob(ctx context.Context, conn *websocket.Conn, jobID st
 	}
 	log.Printf("owlrun: gateway: job %s buyer request received (%d bytes)", jobID, len(buyerBody))
 
-	// Inject num_ctx if configured and buyer didn't specify it.
-	c.mu.RLock()
-	ctxLen := c.contextLength
-	c.mu.RUnlock()
-	if ctxLen > 0 {
+	// Patch buyer request before forwarding to Ollama's OpenAI-compat endpoint:
+	// - Ensure stream=true (Ollama defaults to non-streaming on /v1/chat/completions)
+	// - Inject num_ctx via Ollama's options extension if configured
+	{
 		var parsed map[string]any
 		if json.Unmarshal(buyerBody, &parsed) == nil {
-			opts, _ := parsed["options"].(map[string]any)
-			if opts == nil {
-				opts = map[string]any{}
+			changed := false
+
+			// Force streaming — gateway expects SSE chunks.
+			if _, hasStream := parsed["stream"]; !hasStream {
+				parsed["stream"] = true
+				changed = true
 			}
-			if _, hasCtx := opts["num_ctx"]; !hasCtx {
-				opts["num_ctx"] = ctxLen
-				parsed["options"] = opts
+
+			// Request usage in final chunk so gateway can meter tokens.
+			if _, hasSO := parsed["stream_options"]; !hasSO {
+				parsed["stream_options"] = map[string]any{"include_usage": true}
+				changed = true
+			}
+
+			// Inject num_ctx if configured and buyer didn't specify it.
+			c.mu.RLock()
+			ctxLen := c.contextLength
+			c.mu.RUnlock()
+			if ctxLen > 0 {
+				opts, _ := parsed["options"].(map[string]any)
+				if opts == nil {
+					opts = map[string]any{}
+				}
+				if _, hasCtx := opts["num_ctx"]; !hasCtx {
+					opts["num_ctx"] = ctxLen
+					parsed["options"] = opts
+					changed = true
+				}
+			}
+
+			if changed {
 				if patched, err := json.Marshal(parsed); err == nil {
 					buyerBody = patched
 				}
@@ -712,9 +746,11 @@ func (c *Connector) proxyJob(ctx context.Context, conn *websocket.Conn, jobID st
 		}
 	}
 
-	// Step 2: Forward buyer's request to local Ollama.
+	// Step 2: Forward buyer's request to local Ollama (OpenAI-compat endpoint).
+	// Buyers send OpenAI format; Ollama's /v1/chat/completions accepts and
+	// responds in the same format — no conversion needed on either side.
 	ollamaReq, err := http.NewRequestWithContext(ctx, http.MethodPost,
-		c.ollamaURL()+"/api/chat", bytes.NewReader(buyerBody))
+		c.ollamaURL()+"/v1/chat/completions", bytes.NewReader(buyerBody))
 	if err != nil {
 		return err
 	}

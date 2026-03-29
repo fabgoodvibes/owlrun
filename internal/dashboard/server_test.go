@@ -6,6 +6,7 @@ import (
 	"net"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 )
 
@@ -198,5 +199,119 @@ func TestStart_ListensAndResponds(t *testing.T) {
 	}
 	if status.State != "idle" {
 		t.Errorf("State = %q, want idle", status.State)
+	}
+}
+
+func TestHandleSetKeepWarm_NotReady(t *testing.T) {
+	s := New(0)
+	body := `{"on":true}`
+	req := httptest.NewRequest(http.MethodPost, "/api/set-keep-warm", strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	s.handleSetKeepWarm(w, req)
+
+	if w.Code != http.StatusServiceUnavailable {
+		t.Errorf("status = %d, want 503", w.Code)
+	}
+}
+
+func TestHandleSetKeepWarm_MethodNotAllowed(t *testing.T) {
+	s := New(0)
+	req := httptest.NewRequest(http.MethodGet, "/api/set-keep-warm", nil)
+	w := httptest.NewRecorder()
+	s.handleSetKeepWarm(w, req)
+
+	if w.Code != http.StatusMethodNotAllowed {
+		t.Errorf("status = %d, want 405", w.Code)
+	}
+}
+
+func TestHandleSetKeepWarm_Enable(t *testing.T) {
+	s := New(0)
+	var called bool
+	var gotValue bool
+	fn := SetKeepWarmFunc(func(on bool) error {
+		called = true
+		gotValue = on
+		return nil
+	})
+	s.SetKeepWarmSetter(fn)
+
+	body := `{"on":true}`
+	req := httptest.NewRequest(http.MethodPost, "/api/set-keep-warm", strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	s.handleSetKeepWarm(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Errorf("status = %d, want 200", w.Code)
+	}
+	if !called {
+		t.Error("setter was not called")
+	}
+	if !gotValue {
+		t.Error("setter received false, want true")
+	}
+
+	var resp map[string]any
+	json.NewDecoder(w.Body).Decode(&resp)
+	if resp["keep_warm"] != true {
+		t.Errorf("response keep_warm = %v, want true", resp["keep_warm"])
+	}
+}
+
+func TestHandleSetKeepWarm_Disable(t *testing.T) {
+	s := New(0)
+	var gotValue bool
+	fn := SetKeepWarmFunc(func(on bool) error {
+		gotValue = on
+		return nil
+	})
+	s.SetKeepWarmSetter(fn)
+
+	body := `{"on":false}`
+	req := httptest.NewRequest(http.MethodPost, "/api/set-keep-warm", strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	s.handleSetKeepWarm(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Errorf("status = %d, want 200", w.Code)
+	}
+	if gotValue {
+		t.Error("setter received true, want false")
+	}
+}
+
+func TestHandleSetKeepWarm_Error(t *testing.T) {
+	s := New(0)
+	fn := SetKeepWarmFunc(func(on bool) error {
+		return fmt.Errorf("disk full")
+	})
+	s.SetKeepWarmSetter(fn)
+
+	body := `{"on":true}`
+	req := httptest.NewRequest(http.MethodPost, "/api/set-keep-warm", strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	s.handleSetKeepWarm(w, req)
+
+	if w.Code != http.StatusInternalServerError {
+		t.Errorf("status = %d, want 500", w.Code)
+	}
+}
+
+func TestHandleSetKeepWarm_InvalidJSON(t *testing.T) {
+	s := New(0)
+	fn := SetKeepWarmFunc(func(on bool) error { return nil })
+	s.SetKeepWarmSetter(fn)
+
+	req := httptest.NewRequest(http.MethodPost, "/api/set-keep-warm", strings.NewReader("not json"))
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	s.handleSetKeepWarm(w, req)
+
+	if w.Code != http.StatusBadRequest {
+		t.Errorf("status = %d, want 400", w.Code)
 	}
 }

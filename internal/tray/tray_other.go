@@ -114,6 +114,7 @@ func Run(cfg config.Config, dash *dashboard.Server, mockMode bool) {
 		d.ollamaMgr.SetContextLength(cfg.Inference.ContextLength)
 		gw.SetContextLength(cfg.Inference.ContextLength)
 	}
+	gw.SetDebug(cfg.Marketplace.Debug)
 
 	if dash != nil {
 		dash.SetProvider(d.statusSnapshot)
@@ -146,6 +147,21 @@ func Run(cfg config.Config, dash *dashboard.Server, mockMode bool) {
 				return err
 			}
 			d.setJobMode(mode)
+			return nil
+		})
+		dash.SetKeepWarmSetter(func(on bool) error {
+			if err := config.SaveKeepWarm(on); err != nil {
+				return err
+			}
+			d.mu.Lock()
+			d.cfg.Inference.KeepWarm = on
+			model := d.model
+			d.mu.Unlock()
+			if on && model != "" {
+				d.ollamaMgr.StartKeepWarm(model)
+			} else {
+				d.ollamaMgr.StopKeepWarm()
+			}
 			return nil
 		})
 		dash.SetFreeTierPctSetter(func(pct int) error {
@@ -393,6 +409,9 @@ func (d *daemon) startEarning() {
 
 	d.gateway.SetModels(models)
 	d.gateway.Connect()
+	if d.cfg.Inference.KeepWarm {
+		d.ollamaMgr.StartKeepWarm(model)
+	}
 	log.Printf("owlrun: ready — connecting to gateway")
 }
 
@@ -414,6 +433,7 @@ func (d *daemon) loadOrPull(model string) error {
 }
 
 func (d *daemon) stopEarning() {
+	d.ollamaMgr.StopKeepWarm()
 	d.gateway.Disconnect()
 	if err := d.ollamaMgr.Stop(); err != nil {
 		log.Printf("owlrun: stop ollama: %v", err)

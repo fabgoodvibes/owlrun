@@ -284,3 +284,58 @@ func TestBootstrap_RoundTrip(t *testing.T) {
 		t.Errorf("APIKey mismatch: %q vs %q", cfg1.Account.APIKey, cfg2.Account.APIKey)
 	}
 }
+
+func TestKeepWarm_DefaultTrue(t *testing.T) {
+	withTempHome(t)
+
+	cfg, err := Load()
+	if err != nil {
+		t.Fatalf("Load() error: %v", err)
+	}
+	if !cfg.Inference.KeepWarm {
+		t.Error("KeepWarm should default to true")
+	}
+}
+
+func TestKeepWarm_LoadFromINI(t *testing.T) {
+	home := withTempHome(t)
+
+	confDir := filepath.Join(home, ".owlrun")
+	os.MkdirAll(confDir, 0o755)
+	ini := "[inference]\nkeep_warm = false\n"
+	os.WriteFile(filepath.Join(confDir, "owlrun.conf"), []byte(ini), 0o644)
+
+	cfg, err := Load()
+	if err != nil {
+		t.Fatalf("Load() error: %v", err)
+	}
+	if cfg.Inference.KeepWarm {
+		t.Error("KeepWarm should be false when set in INI")
+	}
+}
+
+func TestSaveKeepWarm_RoundTrip(t *testing.T) {
+	home := withTempHome(t)
+
+	confDir := filepath.Join(home, ".owlrun")
+	os.MkdirAll(confDir, 0o755)
+	os.WriteFile(filepath.Join(confDir, "owlrun.conf"), []byte("[inference]\nkeep_warm = true\n"), 0o644)
+
+	// Save false.
+	if err := SaveKeepWarm(false); err != nil {
+		t.Fatalf("SaveKeepWarm(false) error: %v", err)
+	}
+	cfg, _ := Load()
+	if cfg.Inference.KeepWarm {
+		t.Error("KeepWarm should be false after SaveKeepWarm(false)")
+	}
+
+	// Save true.
+	if err := SaveKeepWarm(true); err != nil {
+		t.Fatalf("SaveKeepWarm(true) error: %v", err)
+	}
+	cfg, _ = Load()
+	if !cfg.Inference.KeepWarm {
+		t.Error("KeepWarm should be true after SaveKeepWarm(true)")
+	}
+}

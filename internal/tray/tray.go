@@ -90,6 +90,7 @@ func Run(cfg config.Config, dash *dashboard.Server, mockMode bool) {
 	monitor := gpu.NewMonitor(info, 10*time.Second)
 	tracker := earnings.New()
 
+	log.Printf("owlrun: [debug] cfg.Marketplace.Gateway = %q", cfg.Marketplace.Gateway)
 	w := wallet.New(cfg.Marketplace.Gateway, cfg.Account.APIKey)
 
 	a := &Agent{
@@ -145,6 +146,7 @@ func Run(cfg config.Config, dash *dashboard.Server, mockMode bool) {
 		a.ollamaMgr.SetContextLength(cfg.Inference.ContextLength)
 		gw.SetContextLength(cfg.Inference.ContextLength)
 	}
+	gw.SetDebug(cfg.Marketplace.Debug)
 
 	systray.Run(a.onReady, a.onExit)
 }
@@ -237,6 +239,21 @@ func (a *Agent) onReady() {
 				return err
 			}
 			a.setJobMode(mode)
+			return nil
+		})
+		a.dash.SetKeepWarmSetter(func(on bool) error {
+			if err := config.SaveKeepWarm(on); err != nil {
+				return err
+			}
+			a.mu.Lock()
+			a.cfg.Inference.KeepWarm = on
+			model := a.model
+			a.mu.Unlock()
+			if on && model != "" {
+				a.ollamaMgr.StartKeepWarm(model)
+			} else {
+				a.ollamaMgr.StopKeepWarm()
+			}
 			return nil
 		})
 		a.dash.SetFreeTierPctSetter(func(pct int) error {
@@ -533,6 +550,9 @@ func (a *Agent) startEarning() {
 	a.mu.Unlock()
 	a.gateway.SetModels(models)
 	a.gateway.Connect()
+	if a.cfg.Inference.KeepWarm {
+		a.ollamaMgr.StartKeepWarm(model)
+	}
 	log.Printf("owlrun: ready — connecting to gateway")
 }
 
@@ -556,6 +576,7 @@ func (a *Agent) loadOrPull(model string) error {
 
 // stopEarning disconnects from the gateway and shuts down Ollama.
 func (a *Agent) stopEarning() {
+	a.ollamaMgr.StopKeepWarm()
 	a.gateway.Disconnect()
 	if err := a.ollamaMgr.Stop(); err != nil {
 		log.Printf("owlrun: stop ollama: %v", err)

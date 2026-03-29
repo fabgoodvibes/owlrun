@@ -185,6 +185,7 @@ func buildDaemon(cfg config.Config, dash *dashboard.Server, mockMode bool) *sniD
 	monitor := gpu.NewMonitor(info, 10*time.Second)
 	tracker := earnings.New()
 
+	log.Printf("owlrun: [debug] cfg.Marketplace.Gateway = %q", cfg.Marketplace.Gateway)
 	w := wallet.New(cfg.Marketplace.Gateway, cfg.Account.APIKey)
 
 	d := &sniDaemon{
@@ -241,6 +242,7 @@ func buildDaemon(cfg config.Config, dash *dashboard.Server, mockMode bool) *sniD
 		d.ollamaMgr.SetContextLength(cfg.Inference.ContextLength)
 		d.gateway.SetContextLength(cfg.Inference.ContextLength)
 	}
+	d.gateway.SetDebug(cfg.Marketplace.Debug)
 
 	if dash != nil {
 		dash.SetProvider(d.statusSnapshot)
@@ -273,6 +275,21 @@ func buildDaemon(cfg config.Config, dash *dashboard.Server, mockMode bool) *sniD
 				return err
 			}
 			d.setJobMode(mode)
+			return nil
+		})
+		dash.SetKeepWarmSetter(func(on bool) error {
+			if err := config.SaveKeepWarm(on); err != nil {
+				return err
+			}
+			d.mu.Lock()
+			d.cfg.Inference.KeepWarm = on
+			model := d.model
+			d.mu.Unlock()
+			if on && model != "" {
+				d.ollamaMgr.StartKeepWarm(model)
+			} else {
+				d.ollamaMgr.StopKeepWarm()
+			}
 			return nil
 		})
 		dash.SetFreeTierPctSetter(func(pct int) error {
@@ -799,6 +816,9 @@ func (d *sniDaemon) startEarning() {
 
 	d.gateway.SetModels(models)
 	d.gateway.Connect()
+	if d.cfg.Inference.KeepWarm {
+		d.ollamaMgr.StartKeepWarm(model)
+	}
 	log.Printf("owlrun: ready — connecting to gateway")
 }
 
@@ -820,6 +840,7 @@ func (d *sniDaemon) loadOrPull(model string) error {
 }
 
 func (d *sniDaemon) stopEarning() {
+	d.ollamaMgr.StopKeepWarm()
 	d.gateway.Disconnect()
 	if err := d.ollamaMgr.Stop(); err != nil {
 		log.Printf("owlrun: stop ollama: %v", err)

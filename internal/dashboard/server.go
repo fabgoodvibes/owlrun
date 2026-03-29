@@ -79,6 +79,7 @@ type Status struct {
 	AvailableModels  []AvailableModel `json:"available_models,omitempty"`
 	Pulling          bool             `json:"pulling"` // true if download in progress
 	ContextLength    int              `json:"context_length"`
+	KeepWarm         bool             `json:"keep_warm"`
 	FreeTierPct      int              `json:"free_tier_pct"`
 	KarmaScore       int64            `json:"karma_score"`
 	KarmaTier        string           `json:"karma_tier"`
@@ -163,6 +164,9 @@ type SetContextLengthFunc func(ctxLen int) error
 // SetFreeTierPctFunc changes the free tier donation percentage and re-registers.
 type SetFreeTierPctFunc func(pct int) error
 
+// SetKeepWarmFunc toggles the model keep-warm periodic ping.
+type SetKeepWarmFunc func(on bool) error
+
 // SwitchModelFunc switches the active primary model. If the model is already
 // installed, it loads it into VRAM and re-registers. Returns error if not installed.
 type SwitchModelFunc func(model string) error
@@ -206,6 +210,7 @@ type Server struct {
 	setJobMode     atomic.Pointer[SetJobModeFunc]
 	setCtxLen      atomic.Pointer[SetContextLengthFunc]
 	setFreeTier    atomic.Pointer[SetFreeTierPctFunc]
+	setKeepWarm    atomic.Pointer[SetKeepWarmFunc]
 }
 
 // New creates a dashboard Server on the given port.
@@ -272,6 +277,11 @@ func (s *Server) SetFreeTierPctSetter(fn SetFreeTierPctFunc) {
 	s.setFreeTier.Store(&fn)
 }
 
+// SetKeepWarmSetter wires the keep-warm toggle function.
+func (s *Server) SetKeepWarmSetter(fn SetKeepWarmFunc) {
+	s.setKeepWarm.Store(&fn)
+}
+
 // Start launches the HTTP server in the background.
 // The listener is bound before returning so the port is ready for connections.
 func (s *Server) Start() error {
@@ -289,6 +299,7 @@ func (s *Server) Start() error {
 	mux.HandleFunc("/api/set-job-mode", s.handleSetJobMode)
 	mux.HandleFunc("/api/set-context-length", s.handleSetContextLength)
 	mux.HandleFunc("/api/set-free-tier", s.handleSetFreeTier)
+	mux.HandleFunc("/api/set-keep-warm", s.handleSetKeepWarm)
 	addr := fmt.Sprintf("127.0.0.1:%d", s.port)
 	ln, err := net.Listen("tcp", addr)
 	if err != nil {
@@ -582,6 +593,41 @@ func (s *Server) handleSetFreeTier(w http.ResponseWriter, r *http.Request) {
 	}
 
 	json.NewEncoder(w).Encode(map[string]any{"status": "ok", "free_tier_pct": req.Pct})
+}
+
+func (s *Server) handleSetKeepWarm(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Content-Type", "application/json")
+	w.Header().Set("Access-Control-Allow-Origin", "*")
+
+	if r.Method != http.MethodPost {
+		w.WriteHeader(http.StatusMethodNotAllowed)
+		json.NewEncoder(w).Encode(map[string]string{"error": "POST required"})
+		return
+	}
+
+	fn := s.setKeepWarm.Load()
+	if fn == nil {
+		w.WriteHeader(http.StatusServiceUnavailable)
+		json.NewEncoder(w).Encode(map[string]string{"error": "not ready"})
+		return
+	}
+
+	var req struct {
+		On bool `json:"on"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		w.WriteHeader(http.StatusBadRequest)
+		json.NewEncoder(w).Encode(map[string]string{"error": "invalid request"})
+		return
+	}
+
+	if err := (*fn)(req.On); err != nil {
+		w.WriteHeader(http.StatusInternalServerError)
+		json.NewEncoder(w).Encode(map[string]string{"error": err.Error()})
+		return
+	}
+
+	json.NewEncoder(w).Encode(map[string]any{"status": "ok", "keep_warm": req.On})
 }
 
 func (s *Server) handleSwitchModel(w http.ResponseWriter, r *http.Request) {
@@ -1053,6 +1099,17 @@ const dashboardHTML = `<!DOCTYPE html>
             <span>0%</span><span>50%</span><span>100%</span>
           </div>
           <div style="font-size:12px;color:var(--text-muted);margin-top:6px">Share idle cycles with free-tier users. Higher donation = more karma = more paid traffic routed to you.</div>
+        </div>
+      </div>
+
+      <!-- Keep warm toggle -->
+      <div style="margin-top:16px;padding-top:14px;border-top:1px solid var(--border)">
+        <div style="display:flex;justify-content:space-between;align-items:center">
+          <div>
+            <span style="font-size:14px;color:var(--text)">Keep model warm</span>
+            <div style="font-size:12px;color:var(--text-muted);margin-top:2px">Ping every 4 min to prevent VRAM eviction</div>
+          </div>
+          <input type="checkbox" id="keep-warm-toggle" checked onchange="setKeepWarm(this.checked)" style="accent-color:#f7931a;width:18px;height:18px;cursor:pointer" />
         </div>
       </div>
 
@@ -1542,6 +1599,12 @@ function update(d) {
       updateFreeTierDisplay(d.free_tier_pct || 0);
     }
 
+    // Keep warm
+    var kwToggle = document.getElementById('keep-warm-toggle');
+    if (document.activeElement !== kwToggle) {
+      kwToggle.checked = d.keep_warm !== false;
+    }
+
     // Context length
     var ctxLen = d.context_length || 8192;
     var ctxSelect = document.getElementById('ctx-len-select');
@@ -1751,6 +1814,13 @@ function updateFreeTierDisplay(val) {
 async function saveFreeTierPct(val) {
   try {
     await fetch('/api/set-free-tier', {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({pct:parseInt(val)})});
+    poll();
+  } catch(e) {}
+}
+
+async function setKeepWarm(on) {
+  try {
+    await fetch('/api/set-keep-warm', {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({on:on})});
     poll();
   } catch(e) {}
 }

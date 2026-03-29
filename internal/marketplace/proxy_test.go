@@ -107,18 +107,22 @@ func dialWS(t *testing.T, url string) *websocket.Conn {
 }
 
 // startOllama starts a plain HTTP server that acts as Ollama.
-func startOllama(t *testing.T, wantBody, response string) *httptest.Server {
+// wantSubstrings are strings that must appear in the request body.
+func startOllama(t *testing.T, response string, wantSubstrings ...string) *httptest.Server {
 	t.Helper()
 	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path != "/api/chat" {
-			t.Errorf("ollama path = %q, want /api/chat", r.URL.Path)
+		if r.URL.Path != "/v1/chat/completions" {
+			t.Errorf("ollama path = %q, want /v1/chat/completions", r.URL.Path)
 		}
 		b, err := io.ReadAll(r.Body)
 		if err != nil {
 			t.Errorf("ollama ReadAll: %v", err)
 		}
-		if got := string(b); got != wantBody {
-			t.Errorf("ollama received %q, want %q", got, wantBody)
+		body := string(b)
+		for _, sub := range wantSubstrings {
+			if !strings.Contains(body, sub) {
+				t.Errorf("ollama body missing %q, got: %s", sub, body)
+			}
 		}
 		w.WriteHeader(http.StatusOK)
 		fmt.Fprint(w, response)
@@ -140,11 +144,11 @@ func connector(gw *httptest.Server, ollamaURL string) *Connector {
 // -- Tests --------------------------------------------------------------------
 
 func TestProxyJob_HappyPath(t *testing.T) {
-	const buyerReq = `{"model":"llama3:8b","messages":[{"role":"user","content":"hi"}]}`
-	const ollamaOut = `{"message":{"content":"hello"},"done":true,"eval_count":5}`
+	const buyerReq = `{"model":"llama3:8b","messages":[{"role":"user","content":"hi"}],"stream":true}`
+	const ollamaOut = "data: {\"id\":\"chatcmpl-1\",\"object\":\"chat.completion.chunk\",\"model\":\"llama3:8b\",\"choices\":[{\"index\":0,\"delta\":{\"content\":\"hello\"},\"finish_reason\":\"stop\"}],\"usage\":{\"prompt_tokens\":5,\"completion_tokens\":1,\"total_tokens\":6}}\n\ndata: [DONE]\n\n"
 
 	gw := startGatewayHTTP(t, buyerReq)
-	ollama := startOllama(t, buyerReq, ollamaOut)
+	ollama := startOllama(t, ollamaOut, `"stream":true`, `"stream_options"`, `"include_usage":true`)
 	wsSrv, cap := startWSServer(t)
 	wsConn := dialWS(t, wsSrv.URL)
 
