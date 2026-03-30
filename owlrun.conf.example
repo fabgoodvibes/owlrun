@@ -6,9 +6,8 @@
 
 [account]
 api_key       =                     # Set during install wizard
-wallet        =                     # Optional: crypto payout address
 referral_code     =                     # Optional: affiliate referral code (owlr_ref_...)
-lightning_address =                     # Optional: Lightning address for BTC payouts (e.g. user@walletofsatoshi.com)
+lightning_address =                     # Lightning address for BTC payouts (e.g. user@walletofsatoshi.com)
 
 [marketplace]
 # The Owlrun Gateway is the default and only connection point for this node.

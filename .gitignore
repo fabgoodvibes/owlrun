@@ -4,3 +4,5 @@ dist/
 .owlrun/
 owlrun-linux-*
 owlrun-darwin-*
+owlrun
+owlrun-*
