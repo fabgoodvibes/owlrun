@@ -1,0 +1,360 @@
+// Package dashboard serves a local web UI on localhost:8080 with live GPU
+// stats, earnings, and marketplace status. All data is read-only — the
+// dashboard displays state, it never changes it.
+package dashboard
+
+import (
+	"encoding/json"
+	"fmt"
+	"net"
+	"net/http"
+	"sync/atomic"
+)
+
+// Status is the full snapshot returned by GET /api/status.
+type Status struct {
+	NodeID  string `json:"node_id"`
+	Version string `json:"version"`
+	Network string `json:"network"` // "beta" | "production"
+	State   string `json:"state"`   // "earning" | "idle" | "paused"
+
+	Wallet struct {
+		Address string `json:"address"`
+		Warning string `json:"warning,omitempty"` // non-empty = user needs to set wallet
+	} `json:"wallet"`
+
+	GPU struct {
+		Name        string  `json:"name"`
+		Vendor      string  `json:"vendor"`
+		VRAMTotalMB int     `json:"vram_total_mb"`
+		UtilPct     int     `json:"util_pct"`
+		VRAMFreeMB  int     `json:"vram_free_mb"`
+		TempC       int     `json:"temp_c"`
+		PowerW      float64 `json:"power_w"`
+		VRAMExact   bool    `json:"vram_exact"`
+	} `json:"gpu"`
+
+	Model string `json:"model"`
+
+	Earnings struct {
+		TodayUSD float64 `json:"today_usd"`
+		TotalUSD float64 `json:"total_usd"`
+	} `json:"earnings"`
+
+	Gateway struct {
+		Connected        bool    `json:"connected"`
+		GatewayStatus    string  `json:"status"`
+		JobsToday        int     `json:"jobs_today"`
+		TokensToday      int     `json:"tokens_today"`
+		EarnedTodayUSD   float64 `json:"earned_today_usd"`
+		QueueDepthGlobal int     `json:"queue_depth_global"`
+		NextPayoutEpoch  string  `json:"next_payout_epoch"`
+	} `json:"gateway"`
+
+	Disk struct {
+		Path    string  `json:"path"`
+		TotalGB float64 `json:"total_gb"`
+		FreeGB  float64 `json:"free_gb"`
+		FreePct float64 `json:"free_pct"`
+	} `json:"disk"`
+}
+
+// StatusProvider is a function that returns the current status snapshot.
+// Set via SetProvider after the tray initialises its subsystems.
+type StatusProvider func() Status
+
+// Server is the embedded web dashboard.
+type Server struct {
+	port     int
+	provider atomic.Pointer[StatusProvider]
+}
+
+// New creates a dashboard Server on the given port.
+func New(port int) *Server {
+	if port == 0 {
+		port = 8080
+	}
+	return &Server{port: port}
+}
+
+// SetProvider wires the live data source into the dashboard.
+// Called by the tray once subsystems are initialised.
+func (s *Server) SetProvider(p StatusProvider) {
+	s.provider.Store(&p)
+}
+
+// Start launches the HTTP server in the background.
+// The listener is bound before returning so the port is ready for connections.
+func (s *Server) Start() error {
+	mux := http.NewServeMux()
+	mux.HandleFunc("/", s.handleIndex)
+	mux.HandleFunc("/api/status", s.handleStatus)
+	ln, err := net.Listen("tcp", fmt.Sprintf("127.0.0.1:%d", s.port))
+	if err != nil {
+		return err
+	}
+	go http.Serve(ln, mux) //nolint:errcheck
+	return nil
+}
+
+func (s *Server) getStatus() Status {
+	p := s.provider.Load()
+	if p == nil {
+		return Status{State: "starting", Version: "0.1.0"}
+	}
+	return (*p)()
+}
+
+func (s *Server) handleStatus(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Content-Type", "application/json")
+	w.Header().Set("Access-Control-Allow-Origin", "*")
+	json.NewEncoder(w).Encode(s.getStatus())
+}
+
+func (s *Server) handleIndex(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Content-Type", "text/html; charset=utf-8")
+	fmt.Fprint(w, dashboardHTML)
+}
+
+const dashboardHTML = `<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Owlrun Dashboard</title>
+<style>
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body { background: #0f0f13; color: #e2e2e8; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; font-size: 14px; padding: 24px; }
+  h1 { font-size: 20px; font-weight: 600; margin-bottom: 20px; color: #fff; letter-spacing: -0.3px; }
+  h1 span { opacity: 0.5; font-weight: 400; font-size: 13px; margin-left: 8px; }
+  .grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(280px, 1fr)); gap: 16px; }
+  .card { background: #1a1a24; border: 1px solid #2a2a38; border-radius: 10px; padding: 18px; }
+  .card-title { font-size: 11px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.8px; color: #666; margin-bottom: 14px; }
+  .stat { display: flex; justify-content: space-between; align-items: center; margin-bottom: 10px; }
+  .stat:last-child { margin-bottom: 0; }
+  .stat-label { color: #888; }
+  .stat-value { font-weight: 500; color: #e2e2e8; font-variant-numeric: tabular-nums; }
+  .state-badge { display: inline-flex; align-items: center; gap: 7px; font-weight: 600; font-size: 15px; }
+  .dot { width: 10px; height: 10px; border-radius: 50%; flex-shrink: 0; }
+  .dot-green  { background: #22c55e; box-shadow: 0 0 8px #22c55e88; }
+  .dot-yellow { background: #eab308; box-shadow: 0 0 8px #eab30888; }
+  .dot-grey   { background: #6b7280; }
+  .dot-blue   { background: #3b82f6; box-shadow: 0 0 8px #3b82f688; }
+  .dot-red    { background: #ef4444; box-shadow: 0 0 8px #ef444488; }
+  .bar-wrap { background: #2a2a38; border-radius: 4px; height: 6px; width: 100px; overflow: hidden; }
+  .bar-fill { height: 100%; border-radius: 4px; transition: width 0.4s ease; }
+  .bar-green  { background: #22c55e; }
+  .bar-yellow { background: #eab308; }
+  .bar-red    { background: #ef4444; }
+  .earnings-big { font-size: 28px; font-weight: 700; color: #22c55e; font-variant-numeric: tabular-nums; margin-bottom: 4px; }
+  .earnings-sub { font-size: 12px; color: #555; }
+  .node-id { font-size: 11px; color: #444; font-family: monospace; margin-top: 6px; }
+  .connected { color: #22c55e; }
+  .disconnected { color: #ef4444; }
+  #updated { position: fixed; bottom: 16px; right: 20px; font-size: 11px; color: #333; }
+  .wallet-warn { background: #2d1f00; border: 1px solid #b45309; border-radius: 8px; padding: 14px 18px; margin-bottom: 16px; display: none; }
+  .wallet-warn .warn-title { color: #f59e0b; font-weight: 600; font-size: 13px; margin-bottom: 4px; }
+  .wallet-warn .warn-body { color: #d4a04a; font-size: 12px; line-height: 1.5; }
+  .wallet-warn code { background: #1a1a24; padding: 2px 6px; border-radius: 4px; font-size: 11px; color: #e2e2e8; }
+  .network-badge { display: inline-block; background: #b45309; color: #fff; font-size: 10px; font-weight: 600; padding: 2px 8px; border-radius: 4px; margin-left: 8px; text-transform: uppercase; vertical-align: middle; }
+</style>
+</head>
+<body>
+<h1>🦉 Owlrun <span id="version"></span><span id="network-badge" class="network-badge" style="display:none"></span></h1>
+<div id="wallet-warn" class="wallet-warn">
+  <div class="warn-title">Wallet not configured</div>
+  <div class="warn-body" id="wallet-warn-body"></div>
+</div>
+<div class="grid">
+
+  <div class="card">
+    <div class="card-title">Status</div>
+    <div id="state-badge" class="state-badge">—</div>
+    <div class="node-id" id="node-id"></div>
+  </div>
+
+  <div class="card">
+    <div class="card-title">Earnings</div>
+    <div class="earnings-big" id="today">$0.00</div>
+    <div class="earnings-sub">today</div>
+    <div style="margin-top:12px" class="stat">
+      <span class="stat-label">All time</span>
+      <span class="stat-value" id="total">$0.00</span>
+    </div>
+  </div>
+
+  <div class="card">
+    <div class="card-title">GPU</div>
+    <div class="stat"><span class="stat-label" id="gpu-name" style="color:#aaa;font-size:12px"></span></div>
+    <div class="stat">
+      <span class="stat-label">Utilisation</span>
+      <span class="stat-value" style="display:flex;align-items:center;gap:8px">
+        <span id="util-pct">—</span>
+        <div class="bar-wrap"><div class="bar-fill bar-green" id="util-bar" style="width:0%"></div></div>
+      </span>
+    </div>
+    <div class="stat">
+      <span class="stat-label">VRAM free</span>
+      <span class="stat-value" id="vram-free">—</span>
+    </div>
+    <div class="stat">
+      <span class="stat-label">Temperature</span>
+      <span class="stat-value" id="temp">—</span>
+    </div>
+    <div class="stat">
+      <span class="stat-label">Power draw</span>
+      <span class="stat-value" id="power">—</span>
+    </div>
+  </div>
+
+  <div class="card">
+    <div class="card-title">Model</div>
+    <div class="stat">
+      <span class="stat-label">Loaded</span>
+      <span class="stat-value" id="model" style="font-size:12px;max-width:160px;text-align:right">—</span>
+    </div>
+  </div>
+
+  <div class="card">
+    <div class="card-title">Gateway</div>
+    <div class="stat">
+      <span class="stat-label">Connection</span>
+      <span class="stat-value" id="gw-connected">—</span>
+    </div>
+    <div class="stat">
+      <span class="stat-label">Jobs today</span>
+      <span class="stat-value" id="gw-jobs">—</span>
+    </div>
+    <div class="stat">
+      <span class="stat-label">Tokens today</span>
+      <span class="stat-value" id="gw-tokens">—</span>
+    </div>
+    <div class="stat">
+      <span class="stat-label">Queue depth</span>
+      <span class="stat-value" id="gw-queue">—</span>
+    </div>
+    <div class="stat">
+      <span class="stat-label">Next payout</span>
+      <span class="stat-value" id="gw-payout">—</span>
+    </div>
+  </div>
+
+  <div class="card">
+    <div class="card-title">Disk</div>
+    <div class="stat">
+      <span class="stat-label">Free</span>
+      <span class="stat-value" style="display:flex;align-items:center;gap:8px">
+        <span id="disk-free">—</span>
+        <div class="bar-wrap"><div class="bar-fill bar-green" id="disk-bar" style="width:0%"></div></div>
+      </span>
+    </div>
+    <div class="stat">
+      <span class="stat-label">Total</span>
+      <span class="stat-value" id="disk-total">—</span>
+    </div>
+    <div class="stat">
+      <span class="stat-label">Path</span>
+      <span class="stat-value" style="font-size:11px;color:#666;max-width:160px;text-align:right;word-break:break-all" id="disk-path">—</span>
+    </div>
+  </div>
+
+  <div class="card">
+    <div class="card-title">Status Colors</div>
+    <div class="stat"><span class="state-badge"><span class="dot dot-green"></span>Connected & earning</span></div>
+    <div class="stat"><span class="state-badge"><span class="dot dot-yellow"></span>Getting ready</span></div>
+    <div class="stat"><span class="state-badge"><span class="dot dot-blue"></span>Wallet not set</span></div>
+    <div class="stat"><span class="state-badge"><span class="dot dot-red"></span>Error</span></div>
+    <div class="stat"><span class="state-badge"><span class="dot dot-grey"></span>Paused</span></div>
+  </div>
+
+</div>
+<div id="updated"></div>
+
+<script>
+function fmt2(n) { return '$' + n.toFixed(2); }
+function fmtGB(mb) { return (mb/1024).toFixed(1) + ' GB'; }
+function fmtMB(mb) { return mb > 1024 ? fmtGB(mb) : mb + ' MB'; }
+
+function stateDisplay(state) {
+  switch(state) {
+    case 'earning': return ['dot-green',  '● Connected & earning'];
+    case 'ready':   return ['dot-yellow', '◑ Getting ready'];
+    case 'idle':    return ['dot-yellow', '◑ Idle — waiting'];
+    case 'wallet':  return ['dot-blue',   '◇ Wallet not set'];
+    case 'error':   return ['dot-red',    '✕ Error'];
+    case 'paused':  return ['dot-grey',   '○ Paused'];
+    default:        return ['dot-grey',   state];
+  }
+}
+
+function update(d) {
+  document.getElementById('version').textContent = 'v' + d.version;
+  document.getElementById('node-id').textContent = 'node ' + d.node_id;
+
+  // Network badge (beta/production)
+  var nb = document.getElementById('network-badge');
+  if (d.network === 'beta') { nb.textContent = 'BETA'; nb.style.display = 'inline-block'; }
+  else { nb.style.display = 'none'; }
+
+  // Wallet warning
+  var ww = document.getElementById('wallet-warn');
+  if (d.wallet && d.wallet.warning) {
+    document.getElementById('wallet-warn-body').innerHTML = d.wallet.warning;
+    ww.style.display = 'block';
+  } else { ww.style.display = 'none'; }
+
+  const [dotClass, label] = stateDisplay(d.state);
+  document.getElementById('state-badge').innerHTML =
+    '<span class="dot ' + dotClass + '"></span>' + label;
+
+  document.getElementById('today').textContent = fmt2(d.earnings.today_usd);
+  document.getElementById('total').textContent  = fmt2(d.earnings.total_usd);
+
+  const g = d.gpu;
+  document.getElementById('gpu-name').textContent  = g.name || 'No GPU detected';
+  document.getElementById('util-pct').textContent  = g.util_pct + '%';
+  document.getElementById('util-bar').style.width  = g.util_pct + '%';
+  document.getElementById('vram-free').textContent = fmtMB(g.vram_free_mb);
+  document.getElementById('temp').textContent      = g.temp_c ? g.temp_c + ' °C' : '—';
+  document.getElementById('power').textContent     = g.power_w ? g.power_w.toFixed(0) + ' W' : '—';
+
+  const utilBar = document.getElementById('util-bar');
+  utilBar.className = 'bar-fill ' + (g.util_pct > 80 ? 'bar-red' : g.util_pct > 50 ? 'bar-yellow' : 'bar-green');
+
+  document.getElementById('model').textContent = d.model || '—';
+
+  const gw = d.gateway;
+  const connEl = document.getElementById('gw-connected');
+  connEl.textContent = gw.connected ? 'Connected' : 'Disconnected';
+  connEl.className = 'stat-value ' + (gw.connected ? 'connected' : 'disconnected');
+  document.getElementById('gw-jobs').textContent   = gw.jobs_today;
+  document.getElementById('gw-tokens').textContent = gw.tokens_today.toLocaleString();
+  document.getElementById('gw-queue').textContent  = gw.queue_depth_global;
+  document.getElementById('gw-payout').textContent = gw.next_payout_epoch
+    ? new Date(gw.next_payout_epoch).toLocaleDateString() : '—';
+
+  const dk = d.disk;
+  document.getElementById('disk-free').textContent  = dk.free_gb.toFixed(1) + ' GB (' + dk.free_pct.toFixed(0) + '%)';
+  document.getElementById('disk-total').textContent = dk.total_gb.toFixed(0) + ' GB';
+  document.getElementById('disk-path').textContent  = dk.path;
+  const diskBar = document.getElementById('disk-bar');
+  diskBar.style.width = dk.free_pct + '%';
+  diskBar.className = 'bar-fill ' + (dk.free_pct < 10 ? 'bar-red' : dk.free_pct < 30 ? 'bar-yellow' : 'bar-green');
+
+  document.getElementById('updated').textContent = 'updated ' + new Date().toLocaleTimeString();
+}
+
+async function poll() {
+  try {
+    const r = await fetch('/api/status');
+    update(await r.json());
+  } catch(e) {
+    document.getElementById('updated').textContent = 'connection lost…';
+  }
+}
+
+poll();
+setInterval(poll, 5000);
+</script>
+</body>
+</html>`

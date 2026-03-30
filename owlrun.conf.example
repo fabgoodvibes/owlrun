@@ -1,0 +1,38 @@
+# Owlrun configuration — copy to ~/.owlrun/owlrun.conf and fill in your details.
+# This is an MIT-licensed project — you are free to change any value.
+#
+# Architecture: this node connects to the Owlrun Gateway (your private
+# infrastructure). The gateway routes jobs to buyers (BlockRun, io.net,
+# Akash, direct customers) and takes a routing margin. You never connect
+# to buyers directly from this node.
+
+[account]
+api_key       =                     # Set during install wizard
+wallet        =                     # Optional: crypto payout address
+referral_code =                     # Optional: affiliate referral code (owlr_ref_...)
+
+[marketplace]
+# The Owlrun Gateway is the default and only connection point for this node.
+# The gateway handles all buyer routing and failover internally.
+# MIT spirit: you can point this at any OpenAI-compatible gateway.
+gateway          = https://gateway.owlrun.me
+allow_override   = true
+# region         = auto           # Self-reported region (e.g. us-east, eu-west). Leave empty or "auto" for gateway to detect from IP.
+
+# Optional: additional Owlrun-operated gateway endpoints for redundancy.
+# All must be YOUR infrastructure — pointing to third-party buyers directly
+# bypasses routing margin and control.
+# extra_gateways = https://gateway-eu.owlrun.me/v1, https://gateway-ap.owlrun.me/v1
+
+[inference]
+model_auto       = true             # Auto-select best model for your VRAM
+max_vram_pct     = 80               # Use at most 80% of VRAM for inference
+
+[idle]
+trigger_minutes  = 10               # Start earning after 10 min of no input
+gpu_threshold    = 15               # Only earn if GPU usage < 15%
+watch_processes  = true             # Pause when games or heavy apps are detected
+
+[disk]
+warn_threshold_pct = 30             # Warn if disk is < 30% free
+min_model_space_gb = 8              # Refuse model download if less than 8 GB free

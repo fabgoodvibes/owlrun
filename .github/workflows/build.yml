@@ -1,0 +1,126 @@
+name: Build & Deploy
+
+on:
+  push:
+    branches: [main]
+    tags: ['v*']
+  pull_request:
+    branches: [main]
+
+env:
+  LDFLAGS_BASE: "-s -w"
+  LDFLAGS_PKG: "github.com/fabgoodvibes/owlrun/internal/buildinfo"
+
+jobs:
+  # ── Build all client binaries (beta + production) ──────────────────────────
+  build:
+    name: Build
+    runs-on: ubuntu-latest
+
+    strategy:
+      matrix:
+        network: [beta, production]
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.24'
+          cache: true
+
+      - name: Vet
+        run: go vet ./...
+
+      - name: Test
+        run: go test ./...
+
+      - name: Vulnerability scan
+        run: |
+          go install golang.org/x/vuln/cmd/govulncheck@latest
+          govulncheck ./... || echo "::warning::govulncheck found vulnerabilities — review output above"
+
+      - name: Set ldflags
+        id: flags
+        run: |
+          VER="${{ github.ref_name }}"
+          NET="${{ matrix.network }}"
+          echo "ldflags=${LDFLAGS_BASE} -X ${LDFLAGS_PKG}.Version=${VER} -X ${LDFLAGS_PKG}.Network=${NET}" >> "$GITHUB_OUTPUT"
+
+      - name: Build — Windows amd64
+        run: |
+          mkdir -p dist
+          GOOS=windows GOARCH=amd64 CGO_ENABLED=0 \
+            go build -ldflags='${{ steps.flags.outputs.ldflags }}' \
+            -o dist/owlrun.exe ./cmd/owlrun
+
+      - name: Build — Linux amd64
+        run: |
+          GOOS=linux GOARCH=amd64 CGO_ENABLED=0 \
+            go build -ldflags='${{ steps.flags.outputs.ldflags }}' \
+            -o dist/owlrun-linux-amd64 ./cmd/owlrun
+
+      - name: Build — Linux arm64
+        run: |
+          GOOS=linux GOARCH=arm64 CGO_ENABLED=0 \
+            go build -ldflags='${{ steps.flags.outputs.ldflags }}' \
+            -o dist/owlrun-linux-arm64 ./cmd/owlrun
+
+      - name: Build — macOS amd64 (Intel)
+        run: |
+          GOOS=darwin GOARCH=amd64 CGO_ENABLED=0 \
+            go build -ldflags='${{ steps.flags.outputs.ldflags }}' \
+            -o dist/owlrun-darwin-amd64 ./cmd/owlrun
+
+      - name: Build — macOS arm64 (Apple Silicon)
+        run: |
+          GOOS=darwin GOARCH=arm64 CGO_ENABLED=0 \
+            go build -ldflags='${{ steps.flags.outputs.ldflags }}' \
+            -o dist/owlrun-darwin-arm64 ./cmd/owlrun
+
+      - name: Generate checksums
+        run: |
+          cd dist
+          sha256sum owlrun.exe owlrun-linux-amd64 owlrun-linux-arm64 \
+            owlrun-darwin-amd64 owlrun-darwin-arm64 > checksums.txt
+          cat checksums.txt
+
+      - name: Upload artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: owlrun-${{ matrix.network }}
+          path: dist/
+          retention-days: 7
+
+  # ── Deploy beta binaries to get.owlrun.me via Cloudflare Pages (tags only) ─
+  deploy-beta:
+    name: Deploy beta to get.owlrun.me
+    needs: build
+    runs-on: ubuntu-latest
+    if: startsWith(github.ref, 'refs/tags/v')
+
+    steps:
+      - name: Download beta artifacts
+        uses: actions/download-artifact@v4
+        with:
+          name: owlrun-beta
+          path: dist/
+
+      - name: Prepare Pages directory
+        run: |
+          TAG="${{ github.ref_name }}"
+          mkdir -p pages/download/beta/${TAG}
+          mkdir -p pages/download/beta/latest
+
+          # Copy binaries to versioned dir
+          cp dist/* pages/download/beta/${TAG}/
+
+          # Copy binaries to /latest as well
+          cp dist/* pages/download/beta/latest/
+
+      - name: Deploy to Cloudflare Pages
+        uses: cloudflare/wrangler-action@v3
+        with:
+          apiToken: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          accountId: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          command: pages deploy pages --project-name=owlrun-cdn
