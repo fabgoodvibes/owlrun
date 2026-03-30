@@ -10,22 +10,16 @@ import (
 	"sync"
 	"testing"
 	"time"
+
+	"nhooyr.io/websocket"
+	"nhooyr.io/websocket/wsjson"
 )
 
-// startTLSGateway starts a TLS+HTTP/2 server simulating the gateway Option A
-// rendezvous endpoints:
-//
-//	GET  /.../proxy/request  — returns buyerRequest as body, then returns (clean EOF)
-//	POST /.../proxy/response — reads Ollama's response from the node into gotNodeBody
-//
-// waitGW blocks until the POST handler has completed. It is safe to call even
-// if the POST never arrives (times out instead of hanging).
-func startTLSGateway(t *testing.T, buyerRequest string, gotNodeBody *strings.Builder) (*httptest.Server, func()) {
+// startGatewayHTTP starts a TLS+HTTP/2 server simulating the gateway's
+// GET /proxy/request endpoint. The old POST /proxy/response endpoint is no
+// longer needed — response streaming goes over WS now.
+func startGatewayHTTP(t *testing.T, buyerRequest string) *httptest.Server {
 	t.Helper()
-	postDone := make(chan struct{})
-	var once sync.Once
-	closePostDone := func() { once.Do(func() { close(postDone) }) }
-
 	ts := httptest.NewUnstartedServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if got := r.Header.Get("Authorization"); got != "Bearer test-key" {
 			t.Errorf("Authorization = %q, want Bearer test-key", got)
@@ -33,56 +27,102 @@ func startTLSGateway(t *testing.T, buyerRequest string, gotNodeBody *strings.Bui
 			return
 		}
 
-		switch {
-		case strings.HasSuffix(r.URL.Path, "/proxy/request") && r.Method == http.MethodGet:
-			// Return buyer's request as response body then return immediately.
-			// Handler return → HTTP/2 END_STREAM → clean EOF for the node.
+		if strings.HasSuffix(r.URL.Path, "/proxy/request") && r.Method == http.MethodGet {
 			w.WriteHeader(http.StatusOK)
 			fmt.Fprint(w, buyerRequest)
-
-		case strings.HasSuffix(r.URL.Path, "/proxy/response") && r.Method == http.MethodPost:
-			// Receive Ollama's response from the node.
-			if gotNodeBody != nil {
-				b, _ := io.ReadAll(r.Body)
-				gotNodeBody.Write(b)
-			} else {
-				io.Copy(io.Discard, r.Body)
-			}
-			w.WriteHeader(http.StatusOK)
-			closePostDone()
-
-		default:
-			http.Error(w, "unexpected request", http.StatusNotFound)
+			return
 		}
+
+		http.Error(w, "unexpected request", http.StatusNotFound)
 	}))
 	ts.EnableHTTP2 = true
 	ts.StartTLS()
 	t.Cleanup(ts.Close)
+	return ts
+}
 
-	waitGW := func() {
-		select {
-		case <-postDone:
-		case <-time.After(5 * time.Second):
+// wsCapture holds captured proxy_chunk data and signals when proxy_done arrives.
+type wsCapture struct {
+	mu       sync.Mutex
+	chunks   []string
+	doneCh   chan struct{}
+	doneOnce sync.Once
+}
+
+func newWSCapture() *wsCapture {
+	return &wsCapture{doneCh: make(chan struct{})}
+}
+
+func (c *wsCapture) Chunks() string {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return strings.Join(c.chunks, "")
+}
+
+// startWSServer starts a WebSocket server that reads proxy_chunk/proxy_done
+// messages from the node (test connector). Returns the server and a wsCapture
+// to inspect received data.
+func startWSServer(t *testing.T) (*httptest.Server, *wsCapture) {
+	t.Helper()
+	cap := newWSCapture()
+
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		conn, err := websocket.Accept(w, r, nil)
+		if err != nil {
+			t.Errorf("ws accept: %v", err)
+			return
 		}
+		defer conn.Close(websocket.StatusNormalClosure, "")
+
+		for {
+			var msg wsMsg
+			if err := wsjson.Read(r.Context(), conn, &msg); err != nil {
+				return // connection closed
+			}
+			switch msg.Type {
+			case "proxy_chunk":
+				cap.mu.Lock()
+				cap.chunks = append(cap.chunks, msg.Data)
+				cap.mu.Unlock()
+			case "proxy_done":
+				cap.doneOnce.Do(func() { close(cap.doneCh) })
+				return
+			}
+		}
+	}))
+	t.Cleanup(ts.Close)
+	return ts, cap
+}
+
+// dialWS dials into the WS test server and returns a client-side conn.
+func dialWS(t *testing.T, url string) *websocket.Conn {
+	t.Helper()
+	wsURL := "ws" + url[len("http"):]
+	conn, _, err := websocket.Dial(context.Background(), wsURL, nil)
+	if err != nil {
+		t.Fatalf("ws dial: %v", err)
 	}
-	return ts, waitGW
+	t.Cleanup(func() { conn.Close(websocket.StatusNormalClosure, "") })
+	return conn
 }
 
 // startOllama starts a plain HTTP server that acts as Ollama.
-// io.ReadAll is now safe: buyer's request body has a clean EOF because the
-// GET /proxy/request handler returned (END_STREAM) before we forward to Ollama.
-func startOllama(t *testing.T, wantBody, response string) *httptest.Server {
+// wantSubstrings are strings that must appear in the request body.
+func startOllama(t *testing.T, response string, wantSubstrings ...string) *httptest.Server {
 	t.Helper()
 	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path != "/api/chat" {
-			t.Errorf("ollama path = %q, want /api/chat", r.URL.Path)
+		if r.URL.Path != "/v1/chat/completions" {
+			t.Errorf("ollama path = %q, want /v1/chat/completions", r.URL.Path)
 		}
 		b, err := io.ReadAll(r.Body)
 		if err != nil {
 			t.Errorf("ollama ReadAll: %v", err)
 		}
-		if got := string(b); got != wantBody {
-			t.Errorf("ollama received %q, want %q", got, wantBody)
+		body := string(b)
+		for _, sub := range wantSubstrings {
+			if !strings.Contains(body, sub) {
+				t.Errorf("ollama body missing %q, got: %s", sub, body)
+			}
 		}
 		w.WriteHeader(http.StatusOK)
 		fmt.Fprint(w, response)
@@ -104,23 +144,32 @@ func connector(gw *httptest.Server, ollamaURL string) *Connector {
 // -- Tests --------------------------------------------------------------------
 
 func TestProxyJob_HappyPath(t *testing.T) {
-	const buyerReq = `{"model":"llama3:8b","messages":[{"role":"user","content":"hi"}]}`
-	const ollamaOut = `{"message":{"content":"hello"},"done":true,"eval_count":5}`
+	const buyerReq = `{"model":"llama3:8b","messages":[{"role":"user","content":"hi"}],"stream":true}`
+	const ollamaOut = "data: {\"id\":\"chatcmpl-1\",\"object\":\"chat.completion.chunk\",\"model\":\"llama3:8b\",\"choices\":[{\"index\":0,\"delta\":{\"content\":\"hello\"},\"finish_reason\":\"stop\"}],\"usage\":{\"prompt_tokens\":5,\"completion_tokens\":1,\"total_tokens\":6}}\n\ndata: [DONE]\n\n"
 
-	var nodeBody strings.Builder
-	gw, waitGW := startTLSGateway(t, buyerReq, &nodeBody)
-	ollama := startOllama(t, buyerReq, ollamaOut)
+	gw := startGatewayHTTP(t, buyerReq)
+	ollama := startOllama(t, ollamaOut, `"stream":true`, `"stream_options"`, `"include_usage":true`)
+	wsSrv, cap := startWSServer(t)
+	wsConn := dialWS(t, wsSrv.URL)
+
 	c := connector(gw, ollama.URL)
 
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
-	if err := c.proxyJob(ctx, "job-123"); err != nil {
+	if err := c.proxyJob(ctx, wsConn, "job-123"); err != nil {
 		t.Fatalf("proxyJob error: %v", err)
 	}
-	waitGW() // wait for POST handler to finish writing into nodeBody
-	if got := nodeBody.String(); got != ollamaOut {
-		t.Errorf("gateway received node body %q, want %q", got, ollamaOut)
+
+	// Wait for proxy_done.
+	select {
+	case <-cap.doneCh:
+	case <-time.After(5 * time.Second):
+		t.Fatal("timed out waiting for proxy_done")
+	}
+
+	if got := cap.Chunks(); got != ollamaOut {
+		t.Errorf("WS received %q, want %q", got, ollamaOut)
 	}
 }
 
@@ -132,6 +181,9 @@ func TestProxyJob_GatewayNonOK(t *testing.T) {
 	ts.StartTLS()
 	defer ts.Close()
 
+	wsSrv, _ := startWSServer(t)
+	wsConn := dialWS(t, wsSrv.URL)
+
 	c := &Connector{
 		gatewayBase:   ts.URL,
 		apiKey:        "test-key",
@@ -141,7 +193,7 @@ func TestProxyJob_GatewayNonOK(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
-	err := c.proxyJob(ctx, "job-404")
+	err := c.proxyJob(ctx, wsConn, "job-404")
 	if err == nil {
 		t.Fatal("expected error from 404, got nil")
 	}
@@ -153,7 +205,9 @@ func TestProxyJob_GatewayNonOK(t *testing.T) {
 func TestProxyJob_OllamaError(t *testing.T) {
 	const buyerReq = `{"model":"llama3:8b"}`
 
-	gw, _ := startTLSGateway(t, buyerReq, nil)
+	gw := startGatewayHTTP(t, buyerReq)
+	wsSrv, _ := startWSServer(t)
+	wsConn := dialWS(t, wsSrv.URL)
 
 	badOllama := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "model not loaded", http.StatusInternalServerError)
@@ -165,7 +219,7 @@ func TestProxyJob_OllamaError(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
-	err := c.proxyJob(ctx, "job-ollamaerr")
+	err := c.proxyJob(ctx, wsConn, "job-ollamaerr")
 	if err == nil {
 		t.Fatal("expected error from ollama 500, got nil")
 	}
@@ -182,6 +236,9 @@ func TestProxyJob_ContextCancel(t *testing.T) {
 	ts.StartTLS()
 	defer ts.Close()
 
+	wsSrv, _ := startWSServer(t)
+	wsConn := dialWS(t, wsSrv.URL)
+
 	c := &Connector{
 		gatewayBase:   ts.URL,
 		apiKey:        "test-key",
@@ -190,7 +247,7 @@ func TestProxyJob_ContextCancel(t *testing.T) {
 
 	ctx, cancel := context.WithCancel(context.Background())
 	errCh := make(chan error, 1)
-	go func() { errCh <- c.proxyJob(ctx, "job-hang") }()
+	go func() { errCh <- c.proxyJob(ctx, wsConn, "job-hang") }()
 
 	time.Sleep(50 * time.Millisecond)
 	cancel()
@@ -206,6 +263,9 @@ func TestProxyJob_ContextCancel(t *testing.T) {
 }
 
 func TestProxyJob_GatewayConnectError(t *testing.T) {
+	wsSrv, _ := startWSServer(t)
+	wsConn := dialWS(t, wsSrv.URL)
+
 	c := &Connector{
 		gatewayBase: "https://127.0.0.1:19999",
 		apiKey:      "key",
@@ -214,7 +274,7 @@ func TestProxyJob_GatewayConnectError(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
 	defer cancel()
 
-	if err := c.proxyJob(ctx, "job-noconn"); err == nil {
+	if err := c.proxyJob(ctx, wsConn, "job-noconn"); err == nil {
 		t.Fatal("expected connection error, got nil")
 	}
 }

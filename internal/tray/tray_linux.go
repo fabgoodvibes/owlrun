@@ -30,21 +30,22 @@ import (
 	"github.com/fabgoodvibes/owlrun/internal/idle"
 	"github.com/fabgoodvibes/owlrun/internal/inference"
 	"github.com/fabgoodvibes/owlrun/internal/marketplace"
+	"github.com/fabgoodvibes/owlrun/internal/wallet"
 	"github.com/godbus/dbus/v5"
 	"github.com/godbus/dbus/v5/prop"
 )
 
 // Run is the Linux entry point. Tries a StatusNotifierItem tray widget when
 // a graphical display is available; falls back to headless daemon silently.
-func Run(cfg config.Config, dash *dashboard.Server) {
+func Run(cfg config.Config, dash *dashboard.Server, mockMode bool) {
 	if hasDisplay() {
-		if err := runSNI(cfg, dash); err != nil {
+		if err := runSNI(cfg, dash, mockMode); err != nil {
 			log.Printf("owlrun: tray unavailable (%v), running headless", err)
-			runHeadless(cfg, dash)
+			runHeadless(cfg, dash, mockMode)
 		}
 		return
 	}
-	runHeadless(cfg, dash)
+	runHeadless(cfg, dash, mockMode)
 }
 
 func hasDisplay() bool {
@@ -116,7 +117,9 @@ type sniDaemon struct {
 	tracker   *earnings.Tracker
 	ollamaMgr *inference.Manager
 	gateway   *marketplace.Router
+	ecash     *wallet.Wallet
 	dash      *dashboard.Server
+	mockMode  bool
 
 	// Precomputed icon pixmaps (decoded from ICO at startup).
 	iconGreen  []iconPixmap
@@ -127,9 +130,11 @@ type sniDaemon struct {
 
 	mu             sync.Mutex
 	st             linuxState
+	errorDetail    string // user-facing error message when state=error
 	manuallyPaused bool
 	starting       bool
 	model          string
+	jobMode        string // "never", "idle", "always"
 
 	// D-Bus fields — nil in headless mode.
 	conn      *dbus.Conn
@@ -140,13 +145,13 @@ type sniDaemon struct {
 
 // ─── SNI tray entry point ─────────────────────────────────────────────────────
 
-func runSNI(cfg config.Config, dash *dashboard.Server) error {
+func runSNI(cfg config.Config, dash *dashboard.Server, mockMode bool) error {
 	conn, err := dbus.ConnectSessionBus()
 	if err != nil {
 		return fmt.Errorf("dbus session: %w", err)
 	}
 
-	d := buildDaemon(cfg, dash)
+	d := buildDaemon(cfg, dash, mockMode)
 	d.conn = conn
 	d.menuRev = 1
 
@@ -163,8 +168,8 @@ func runSNI(cfg config.Config, dash *dashboard.Server) error {
 	return nil
 }
 
-func runHeadless(cfg config.Config, dash *dashboard.Server) {
-	d := buildDaemon(cfg, dash)
+func runHeadless(cfg config.Config, dash *dashboard.Server, mockMode bool) {
+	d := buildDaemon(cfg, dash, mockMode)
 
 	log.Printf("owlrun: node %s | gpu %s %s (%.0f GB VRAM)",
 		d.nodeID, d.gpuInfo.Vendor, d.gpuInfo.Name, d.gpuInfo.VRAMTotalGB)
@@ -173,11 +178,15 @@ func runHeadless(cfg config.Config, dash *dashboard.Server) {
 }
 
 // buildDaemon constructs the shared daemon (tray and headless both use this).
-func buildDaemon(cfg config.Config, dash *dashboard.Server) *sniDaemon {
+func buildDaemon(cfg config.Config, dash *dashboard.Server, mockMode bool) *sniDaemon {
 	nodeID := config.EnsureNodeID(&cfg)
+	config.EnsureAPIKey(&cfg)
 	info := gpu.Detect()
 	monitor := gpu.NewMonitor(info, 10*time.Second)
 	tracker := earnings.New()
+
+	log.Printf("owlrun: [debug] cfg.Marketplace.Gateway = %q", cfg.Marketplace.Gateway)
+	w := wallet.New(cfg.Marketplace.Gateway, cfg.Account.APIKey)
 
 	d := &sniDaemon{
 		cfg:        cfg,
@@ -185,8 +194,11 @@ func buildDaemon(cfg config.Config, dash *dashboard.Server) *sniDaemon {
 		gpuInfo:    info,
 		monitor:    monitor,
 		tracker:    tracker,
+		ecash:      w,
 		ollamaMgr:  inference.New(info),
 		dash:       dash,
+		jobMode:    cfg.Idle.JobMode,
+		mockMode:   mockMode,
 		iconGreen:  safeIco(assets.IconGreen),
 		iconYellow: safeIco(assets.IconYellow),
 		iconGrey:   safeIco(assets.IconGrey),
@@ -201,20 +213,163 @@ func buildDaemon(cfg config.Config, dash *dashboard.Server) *sniDaemon {
 		nodeID,
 		cfg.Account.Wallet,
 		cfg.Account.ReferralCode,
+		cfg.Account.LightningAddress,
+		cfg.Account.RedeemThreshold,
+		cfg.Account.FreeTierPct,
 		cfg.Marketplace.Region,
-		"0.1.0",
+		buildinfo.Version,
 		info,
 		func() (int, int, int, float64) {
 			stats := monitor.Latest()
 			return stats.UtilizationPct, stats.VRAMFreeMB, stats.TemperatureC, stats.PowerDrawW
 		},
 		func(model string, tokens int, earnedUSD float64) {
-			tracker.Record(model, tokens, earnedUSD)
+			if err := tracker.Record(model, tokens, earnedUSD); err != nil {
+				log.Printf("owlrun: failed to record earnings: %v", err)
+			}
+		},
+		func() {
+			d.mu.Lock()
+			d.st = linuxEarning
+			d.mu.Unlock()
+		},
+		func(balanceSats int64) {
+			d.ecash.AutoClaim(balanceSats)
 		},
 	)
 
+	if cfg.Inference.ContextLength > 0 {
+		d.ollamaMgr.SetContextLength(cfg.Inference.ContextLength)
+		d.gateway.SetContextLength(cfg.Inference.ContextLength)
+	}
+	d.gateway.SetDebug(cfg.Marketplace.Debug)
+
 	if dash != nil {
 		dash.SetProvider(d.statusSnapshot)
+		dash.SetTracker(tracker)
+		dash.SetClaimer(func(amountSats int64) (string, error) {
+			return d.ecash.Claim(amountSats)
+		})
+		dash.SetLightningAddressSetter(func(addr string) error {
+			if err := config.SaveLightningAddress(addr); err != nil {
+				return err
+			}
+			d.mu.Lock()
+			d.cfg.Account.LightningAddress = addr
+			d.mu.Unlock()
+			d.gateway.SetLightningAddress(addr)
+			return nil
+		})
+		dash.SetRedeemThresholdSetter(func(threshold int) error {
+			if err := config.SaveRedeemThreshold(threshold); err != nil {
+				return err
+			}
+			d.mu.Lock()
+			d.cfg.Account.RedeemThreshold = threshold
+			d.mu.Unlock()
+			d.gateway.SetRedeemThreshold(threshold)
+			return nil
+		})
+		dash.SetJobModeSetter(func(mode string) error {
+			if err := config.SaveJobMode(mode); err != nil {
+				return err
+			}
+			d.setJobMode(mode)
+			return nil
+		})
+		dash.SetKeepWarmSetter(func(on bool) error {
+			if err := config.SaveKeepWarm(on); err != nil {
+				return err
+			}
+			d.mu.Lock()
+			d.cfg.Inference.KeepWarm = on
+			model := d.model
+			d.mu.Unlock()
+			if on && model != "" {
+				d.ollamaMgr.StartKeepWarm(model)
+			} else {
+				d.ollamaMgr.StopKeepWarm()
+			}
+			return nil
+		})
+		dash.SetFreeTierPctSetter(func(pct int) error {
+			if err := config.SaveFreeTierPct(pct); err != nil {
+				return err
+			}
+			d.mu.Lock()
+			d.cfg.Account.FreeTierPct = pct
+			d.mu.Unlock()
+			d.gateway.SetFreeTierPct(pct)
+			return nil
+		})
+		dash.SetContextLengthSetter(func(ctxLen int) error {
+			if err := config.SaveContextLength(ctxLen); err != nil {
+				return err
+			}
+			d.mu.Lock()
+			d.cfg.Inference.ContextLength = ctxLen
+			model := d.model
+			d.mu.Unlock()
+			d.ollamaMgr.SetContextLength(ctxLen)
+			d.gateway.SetContextLength(ctxLen)
+			log.Printf("owlrun: context length changed to %d", ctxLen)
+			if model != "" {
+				if err := d.ollamaMgr.LoadModel(model); err != nil {
+					log.Printf("owlrun: reload model with new context length: %v", err)
+				}
+			}
+			return nil
+		})
+		dash.SetModelSwitcher(func(model string) error {
+			if !d.ollamaMgr.ModelInstalled(model) {
+				return fmt.Errorf("model %s not installed — download it first", model)
+			}
+			log.Printf("owlrun: switching primary model to %s", model)
+			if err := d.ollamaMgr.LoadModel(model); err != nil {
+				return fmt.Errorf("failed to load model: %w", err)
+			}
+			d.mu.Lock()
+			d.model = model
+			d.mu.Unlock()
+			models, _ := d.ollamaMgr.SelectModels(d.gpuInfo.VRAMTotalGB, d.cfg.Inference.MaxVRAMPct)
+			d.gateway.SetModels(models)
+			go d.gateway.Reconnect()
+			return nil
+		})
+		dash.SetModelRemover(func(model string) error {
+			d.mu.Lock()
+			active := d.model
+			d.mu.Unlock()
+			if model == active {
+				return fmt.Errorf("cannot remove the active model — switch to another first")
+			}
+			if err := d.ollamaMgr.DeleteModel(model); err != nil {
+				return err
+			}
+			log.Printf("owlrun: removed model %s", model)
+			models, _ := d.ollamaMgr.SelectModels(d.gpuInfo.VRAMTotalGB, d.cfg.Inference.MaxVRAMPct)
+			d.gateway.SetModels(models)
+			go d.gateway.Reconnect()
+			return nil
+		})
+		dash.SetModelPuller(func(model string) <-chan dashboard.PullModelProgress {
+			out := make(chan dashboard.PullModelProgress, 8)
+			go func() {
+				defer close(out)
+				for p := range d.ollamaMgr.PullModel(model) {
+					pp := dashboard.PullModelProgress{
+						Status:    p.Status,
+						Total:     p.Total,
+						Completed: p.Completed,
+					}
+					if p.Err != nil {
+						pp.Error = p.Err.Error()
+					}
+					out <- pp
+				}
+			}()
+			return out
+		})
 	}
 
 	return d
@@ -318,7 +473,7 @@ func (d *sniDaemon) applyStateLocked() {
 	case linuxMissingWallet:
 		icon = d.iconBlue
 		label = "🔵 Wallet not set"
-		desc = "Set your Solana wallet to start earning"
+		desc = "Set your Lightning address to start earning"
 	case linuxError:
 		icon = d.iconRed
 		label = "🔴 Error"
@@ -344,6 +499,7 @@ func (d *sniDaemon) applyStateLocked() {
 	} else {
 		d.menuObj.toggleLabel = "Pause"
 	}
+	d.menuObj.jobMode = d.jobMode
 	d.menuRev++
 	_ = d.conn.Emit(menuPath, menuIface+".LayoutUpdated", d.menuRev, int32(0))
 }
@@ -353,7 +509,7 @@ func (d *sniDaemon) applyStateLocked() {
 type sniItem struct{ d *sniDaemon }
 
 func (s *sniItem) Activate(x, y int32) *dbus.Error {
-	openBrowser("http://localhost:8080")
+	openBrowser("http://localhost:19131")
 	return nil
 }
 
@@ -367,6 +523,7 @@ type dbusMenu struct {
 	d           *sniDaemon
 	statusLabel string
 	toggleLabel string
+	jobMode     string // synced from sniDaemon on layout build
 }
 
 func (m *dbusMenu) GetLayout(parentId, recursionDepth int32, propertyNames []string) (uint32, layoutItem, *dbus.Error) {
@@ -374,7 +531,9 @@ func (m *dbusMenu) GetLayout(parentId, recursionDepth int32, propertyNames []str
 	rev := m.d.menuRev
 	sl := m.statusLabel
 	tl := m.toggleLabel
+	jm := m.jobMode
 	snap := m.d.tracker.Get()
+	trigMin := m.d.cfg.Idle.TriggerMinutes
 	m.d.mu.Unlock()
 
 	sep := func(id int32) dbus.Variant {
@@ -392,6 +551,35 @@ func (m *dbusMenu) GetLayout(parentId, recursionDepth int32, propertyNames []str
 			},
 		})
 	}
+	radioItem := func(id int32, label string, checked bool) dbus.Variant {
+		state := int32(0)
+		if checked {
+			state = 1
+		}
+		return dbus.MakeVariant(layoutItem{
+			ID: id,
+			Props: map[string]dbus.Variant{
+				"label":        dbus.MakeVariant(label),
+				"enabled":      dbus.MakeVariant(true),
+				"toggle-type":  dbus.MakeVariant("radio"),
+				"toggle-state": dbus.MakeVariant(state),
+			},
+		})
+	}
+
+	// Job mode submenu (ID 20 = parent, 21-23 = children)
+	jobModeParent := dbus.MakeVariant(layoutItem{
+		ID: 20,
+		Props: map[string]dbus.Variant{
+			"label":       dbus.MakeVariant("Accept Jobs"),
+			"children-display": dbus.MakeVariant("submenu"),
+		},
+		Children: []dbus.Variant{
+			radioItem(21, "Never", jm == "never"),
+			radioItem(22, fmt.Sprintf("After idle %dm", trigMin), jm == "idle"),
+			radioItem(23, "Always", jm == "always"),
+		},
+	})
 
 	root := layoutItem{
 		ID:    0,
@@ -404,6 +592,7 @@ func (m *dbusMenu) GetLayout(parentId, recursionDepth int32, propertyNames []str
 			sep(5),
 			item(6, "Open Dashboard", true),
 			item(7, tl, true),
+			jobModeParent,
 			sep(8),
 			item(10, "🟢 Green  — Connected & earning", false),
 			item(11, "🟡 Yellow — Getting ready", false),
@@ -423,11 +612,17 @@ func (m *dbusMenu) Event(id int32, eventId string, data dbus.Variant, timestamp 
 	}
 	switch id {
 	case 6:
-		openBrowser("http://localhost:8080")
+		openBrowser("http://localhost:19131")
 	case 7:
 		m.d.togglePause()
 	case 9:
 		_ = syscall.Kill(os.Getpid(), syscall.SIGTERM)
+	case 21:
+		m.d.setJobMode("never")
+	case 22:
+		m.d.setJobMode("idle")
+	case 23:
+		m.d.setJobMode("always")
 	}
 	return nil
 }
@@ -458,6 +653,22 @@ func (d *sniDaemon) togglePause() {
 	}
 }
 
+func (d *sniDaemon) setJobMode(mode string) {
+	d.mu.Lock()
+	old := d.jobMode
+	d.jobMode = mode
+	wasEarning := d.st == linuxEarning || d.st == linuxReady || d.st == linuxMissingWallet
+	if mode == "never" && wasEarning {
+		d.st = linuxIdle
+	}
+	d.applyStateLocked()
+	d.mu.Unlock()
+	log.Printf("owlrun: job mode changed: %s → %s", old, mode)
+	if mode == "never" && wasEarning {
+		go d.stopEarning()
+	}
+}
+
 func (d *sniDaemon) idleLoop() {
 	d.check()
 	ticker := time.NewTicker(30 * time.Second)
@@ -471,14 +682,21 @@ func (d *sniDaemon) check() {
 	d.mu.Lock()
 	paused := d.manuallyPaused
 	st := d.st
+	mode := d.jobMode
 	d.mu.Unlock()
 
 	if paused {
 		return
 	}
 
+	if mode == "never" {
+		return
+	}
+
 	if st == linuxEarning || st == linuxReady || st == linuxMissingWallet {
-		// Ollama is running. Only stop if the user returns or a game launches.
+		if mode == "always" {
+			return
+		}
 		userBack := idle.IdleDuration() < time.Duration(d.cfg.Idle.TriggerMinutes)*time.Minute
 		gameRunning := d.cfg.Idle.WatchProcesses && idle.IsGameRunning()
 		if userBack || gameRunning {
@@ -491,43 +709,83 @@ func (d *sniDaemon) check() {
 		return
 	}
 
-	// Not currently earning — use full idle check (including GPU threshold).
-	systemIdle := idle.IsSystemIdle(d.cfg.Idle, d.monitor.UtilizationPct())
+	shouldStart := mode == "always" || idle.IsSystemIdle(d.cfg.Idle, d.monitor.UtilizationPct())
 
 	d.mu.Lock()
 	defer d.mu.Unlock()
 
-	if systemIdle && d.st == linuxIdle && !d.starting {
+	if shouldStart && d.st == linuxIdle && !d.starting {
 		d.starting = true
 		go d.startEarning()
 	}
 }
 
 func (d *sniDaemon) startEarning() {
-	// Phase 1: get Ollama running.
-	for _, s := range []struct {
-		name string
-		fn   func() error
-	}{
-		{"install ollama", d.ollamaMgr.EnsureInstalled},
-		{"start ollama", d.ollamaMgr.Start},
-	} {
-		if err := s.fn(); err != nil {
-			log.Printf("owlrun: %s: %v", s.name, err)
+	// Mock mode: start fake Ollama server, skip real Ollama entirely.
+	if d.mockMode {
+		mockSrv, err := inference.StartMockOllama()
+		if err != nil {
+			log.Printf("owlrun: mock ollama failed: %v", err)
 			d.mu.Lock()
 			d.starting = false
 			d.st = linuxError
+			d.errorDetail = "Mock Ollama failed to start: " + err.Error()
 			d.applyStateLocked()
 			d.mu.Unlock()
 			return
 		}
+		mockAddr := "http://" + mockSrv.Addr
+		d.ollamaMgr.SetHost(mockAddr)
+		d.gateway.SetOllamaBase(mockAddr)
+		log.Printf("owlrun: mock mode — using fake model %s on %s", inference.MockModel(), mockAddr)
+
+		d.mu.Lock()
+		d.model = inference.MockModel()
+		d.starting = false
+		if config.NeedsWallet(&d.cfg) {
+			d.st = linuxMissingWallet
+		} else {
+			d.st = linuxReady
+		}
+		d.applyStateLocked()
+		d.mu.Unlock()
+		d.gateway.SetModels([]string{inference.MockModel()})
+		d.gateway.Connect()
+		log.Printf("owlrun: mock mode ready — connecting to gateway")
+		return
 	}
 
-	// Phase 2: select model — prefer already-installed, never auto-pull.
-	model := d.cfg.Inference.Model
-	if model == "" {
-		chosen, suggestions := d.ollamaMgr.SelectModel(d.gpuInfo.VRAMTotalGB, d.cfg.Inference.MaxVRAMPct)
-		if chosen == "" {
+	// Phase 1: get Ollama running.
+	if err := d.ollamaMgr.EnsureInstalled(); err != nil {
+		log.Printf("owlrun: install ollama: %v", err)
+		d.mu.Lock()
+		d.starting = false
+		d.st = linuxError
+		d.errorDetail = "Ollama is not installed. Download it from ollama.com/download, install it, then restart Owlrun."
+		d.applyStateLocked()
+		d.mu.Unlock()
+		return
+	}
+	if err := d.ollamaMgr.Start(); err != nil {
+		log.Printf("owlrun: start ollama: %v", err)
+		d.mu.Lock()
+		d.starting = false
+		d.st = linuxError
+		d.errorDetail = "Ollama failed to start. Make sure Ollama is installed (ollama.com/download) and try restarting Owlrun."
+		d.applyStateLocked()
+		d.mu.Unlock()
+		return
+	}
+
+	// Phase 2: select models — all installed that fit, best first.
+	var models []string
+	if d.cfg.Inference.Model != "" {
+		models = []string{d.cfg.Inference.Model}
+		log.Printf("owlrun: starting — model %s", d.cfg.Inference.Model)
+	} else {
+		var suggestions []string
+		models, suggestions = d.ollamaMgr.SelectModels(d.gpuInfo.VRAMTotalGB, d.cfg.Inference.MaxVRAMPct)
+		if len(models) == 0 {
 			log.Printf("owlrun: no models installed — install one first, then restart")
 			for _, s := range suggestions {
 				log.Printf("  ollama pull %s", s)
@@ -536,15 +794,14 @@ func (d *sniDaemon) startEarning() {
 			d.mu.Lock()
 			d.starting = false
 			d.st = linuxError
+			d.errorDetail = "No AI models installed. Open the dashboard at localhost:19131 and download a model, or run: ollama pull qwen2.5:0.5b"
 			d.applyStateLocked()
 			d.mu.Unlock()
 			return
 		}
-		model = chosen
-		log.Printf("owlrun: using installed model %s", model)
-	} else {
-		log.Printf("owlrun: starting — model %s", model)
+		log.Printf("owlrun: found %d installed models, primary: %s", len(models), models[0])
 	}
+	model := models[0]
 
 	d.mu.Lock()
 	d.model = model
@@ -557,8 +814,11 @@ func (d *sniDaemon) startEarning() {
 	d.applyStateLocked()
 	d.mu.Unlock()
 
-	d.gateway.SetModel(model)
+	d.gateway.SetModels(models)
 	d.gateway.Connect()
+	if d.cfg.Inference.KeepWarm {
+		d.ollamaMgr.StartKeepWarm(model)
+	}
 	log.Printf("owlrun: ready — connecting to gateway")
 }
 
@@ -580,6 +840,7 @@ func (d *sniDaemon) loadOrPull(model string) error {
 }
 
 func (d *sniDaemon) stopEarning() {
+	d.ollamaMgr.StopKeepWarm()
 	d.gateway.Disconnect()
 	if err := d.ollamaMgr.Stop(); err != nil {
 		log.Printf("owlrun: stop ollama: %v", err)
@@ -590,15 +851,20 @@ func (d *sniDaemon) statusSnapshot() dashboard.Status {
 	d.mu.Lock()
 	st := d.st
 	model := d.model
+	jobMode := d.jobMode
 	d.mu.Unlock()
 
 	var s dashboard.Status
+	s.JobMode = jobMode
 	s.NodeID = d.nodeID
+	s.ProviderKey = d.cfg.Account.APIKey
 	s.Version = buildinfo.Version
 	s.Network = buildinfo.Network
 	s.Wallet.Address = d.cfg.Account.Wallet
 	if config.NeedsWallet(&d.cfg) {
-		s.Wallet.Warning = "Set your Solana wallet in <code>~/.owlrun/owlrun.conf</code> under <code>[account]</code> → <code>wallet = YOUR_SOLANA_PUBKEY</code> to receive payouts."
+		s.Wallet.Warning = "Set your Lightning address in the Wallet section to start earning Bitcoin."
+	} else if d.cfg.Account.LightningAddress != "" {
+		s.Wallet.Configured = "Wallet configured at " + d.cfg.Account.LightningAddress
 	}
 	switch st {
 	case linuxEarning:
@@ -609,6 +875,7 @@ func (d *sniDaemon) statusSnapshot() dashboard.Status {
 		s.State = "wallet"
 	case linuxError:
 		s.State = "error"
+		s.ErrorDetail = d.errorDetail
 	case linuxPaused:
 		s.State = "paused"
 	default:
@@ -625,19 +892,102 @@ func (d *sniDaemon) statusSnapshot() dashboard.Status {
 	s.GPU.TempC = gpuStats.TemperatureC
 	s.GPU.PowerW = gpuStats.PowerDrawW
 	s.Model = model
+	installed := d.ollamaMgr.ListInstalled()
+	installedSet := make(map[string]bool, len(installed))
+	for _, m := range installed {
+		installedSet[m] = true
+	}
+	for _, mi := range gpu.AllModelInfos(d.gpuInfo.VRAMTotalGB, d.cfg.Inference.MaxVRAMPct) {
+		s.AvailableModels = append(s.AvailableModels, dashboard.AvailableModel{
+			Tag: mi.Tag, VramGB: mi.VramGB, Installed: installedSet[mi.Tag], Active: mi.Tag == model, Fits: mi.Fits,
+		})
+	}
 
 	snap := d.tracker.Get()
 	s.Earnings.TodayUSD = snap.Today
 	s.Earnings.TotalUSD = snap.Total
 
 	gwStats := d.gateway.Stats()
-	s.Gateway.Connected = st == linuxEarning
+	s.Models = gwStats.Models
+	s.Gateway.Connected = gwStats.Connected
 	s.Gateway.GatewayStatus = gwStats.Status
 	s.Gateway.JobsToday = gwStats.JobsToday
 	s.Gateway.TokensToday = gwStats.TokensToday
 	s.Gateway.EarnedTodayUSD = gwStats.EarnedTodayUSD
+	s.Gateway.EarnedTodaySats = gwStats.EarnedTodaySats
+	s.Gateway.EarnedTotalSats = gwStats.EarnedTotalSats
 	s.Gateway.QueueDepthGlobal = gwStats.QueueDepthGlobal
-	s.Gateway.NextPayoutEpoch = gwStats.NextPayoutEpoch
+	s.LightningAddress = d.cfg.Account.LightningAddress
+	s.RedeemThreshold = d.cfg.Account.RedeemThreshold
+	s.ContextLength = d.cfg.Inference.ContextLength
+	s.FreeTierPct = d.cfg.Account.FreeTierPct
+	s.KarmaScore = gwStats.KarmaScore
+	s.KarmaTier = gwStats.KarmaTier
+	s.FreeTierJobs = gwStats.FreeTierJobs
+
+	// Model pricing from gateway
+	if gwStats.ModelPricing != nil {
+		s.ModelPricing = &dashboard.ModelPricingInfo{
+			PerMInputUSD:  gwStats.ModelPricing.PerMInputUSD,
+			PerMOutputUSD: gwStats.ModelPricing.PerMOutputUSD,
+		}
+	}
+	if len(gwStats.AllModelPricing) > 0 {
+		s.AllModelPricing = make(map[string]*dashboard.ModelPricingInfo, len(gwStats.AllModelPricing))
+		for tag, p := range gwStats.AllModelPricing {
+			s.AllModelPricing[tag] = &dashboard.ModelPricingInfo{
+				PerMInputUSD:  p.PerMInputUSD,
+				PerMOutputUSD: p.PerMOutputUSD,
+			}
+		}
+	}
+
+	// BTC price from gateway
+	s.BtcPrice = dashboard.BtcPriceInfo{
+		LiveUsd:    gwStats.BtcPrice.LiveUsd,
+		YesterdayFix: gwStats.BtcPrice.YesterdayFix,
+		DailyAvg:   gwStats.BtcPrice.DailyAvg,
+		WeeklyAvg:  gwStats.BtcPrice.WeeklyAvg,
+		Status:     gwStats.BtcPrice.Status,
+	}
+
+	// Map broadcasts from gateway to dashboard
+	for _, b := range gwStats.Broadcasts {
+		s.Broadcasts = append(s.Broadcasts, dashboard.BroadcastMsg{
+			Title:     b.Title,
+			Message:   b.Message,
+			Severity:  b.Severity,
+			Timestamp: b.Timestamp,
+		})
+	}
+
+	// Sats wallet
+	if d.ecash != nil {
+		ws := d.ecash.GetStats(gwStats.BalanceSats, gwStats.BtcPrice.LiveUsd)
+		var hist []dashboard.TokenHistoryItem
+		for _, t := range ws.TokenHistory {
+			hist = append(hist, dashboard.TokenHistoryItem{Token: t.Token, Sats: t.Sats, ClaimedAt: t.ClaimedAt})
+		}
+		var wdHist []dashboard.WithdrawHistoryItem
+		for _, w := range gwStats.WithdrawHistory {
+			wdHist = append(wdHist, dashboard.WithdrawHistoryItem{
+				AmountSats:  w.AmountSats,
+				PaymentHash: w.PaymentHash,
+				Timestamp:   w.Timestamp,
+			})
+		}
+		s.SatsWallet = dashboard.SatsWalletInfo{
+			GatewaySats:     ws.GatewaySats,
+			LocalSats:       ws.LocalSats,
+			TotalSats:       ws.TotalSats,
+			USDApprox:       ws.USDApprox,
+			ProofCount:      ws.ProofCount,
+			LastClaim:       ws.LastClaim,
+			LastToken:       ws.LastToken,
+			TokenHistory:    hist,
+			WithdrawHistory: wdHist,
+		}
+	}
 
 	diskInfo, err := disk.Check(disk.OllamaModelsDir())
 	if err == nil {

@@ -4,6 +4,9 @@
 package config
 
 import (
+	"crypto/rand"
+	"encoding/hex"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -16,7 +19,7 @@ import (
 // Beta testnet defaults — hardcoded into beta builds so operators can
 // start earning on testnet without any configuration.
 const (
-	betaGateway = "https://gateway.owlrun.me"
+	betaGateway = "https://node.owlrun.me"
 	betaWallet  = "OwLt3st1111111111111111111111111111111111111" // testnet payout wallet
 )
 
@@ -30,10 +33,13 @@ type Config struct {
 }
 
 type AccountConfig struct {
-	NodeID      string // stable UUID generated once, persisted to conf
-	APIKey      string
-	Wallet      string // Solana pubkey (base58) or EVM address (0x...)
-	ReferralCode string // affiliate referral code (owlr_ref_<code>), optional
+	NodeID           string // stable UUID generated once, persisted to conf
+	APIKey           string
+	Wallet           string // Legacy payout address (deprecated — use LightningAddress)
+	ReferralCode     string // affiliate referral code (owlr_ref_<code>), optional
+	LightningAddress string // Lightning address for BTC payouts (e.g. user@walletofsatoshi.com), optional
+	RedeemThreshold  int    // sats threshold for auto-payout via Lightning (default 500)
+	FreeTierPct      int    // percentage of capacity donated to free tier (0-100, default 0)
 }
 
 type MarketplaceConfig struct {
@@ -46,18 +52,22 @@ type MarketplaceConfig struct {
 	ExtraGateways []string // additional Owlrun-operated endpoints for redundancy
 	AllowOverride bool
 	Region        string // self-reported region; "auto" if unset (gateway resolves from IP)
+	Debug         bool   // verbose debug logging (default false)
 }
 
 type InferenceConfig struct {
-	ModelAuto  bool
-	MaxVRAMPct int
-	Model      string // override: pin a specific model tag; empty = auto-select
+	ModelAuto     bool
+	KeepWarm      bool // periodic ping to prevent Ollama VRAM eviction (default true)
+	MaxVRAMPct    int
+	Model         string // override: pin a specific model tag; empty = auto-select
+	ContextLength int    // Ollama num_ctx; 0 = use default (8192)
 }
 
 type IdleConfig struct {
-	TriggerMinutes int  // no-input duration before earning starts
-	GPUThreshold   int  // GPU utilisation % below which earning is allowed
-	WatchProcesses bool // pause when game processes detected
+	TriggerMinutes int    // no-input duration before earning starts
+	GPUThreshold   int    // GPU utilisation % below which earning is allowed
+	WatchProcesses bool   // pause when game processes detected
+	JobMode        string // "never", "idle" (default), or "always"
 }
 
 type DiskConfig struct {
@@ -68,7 +78,7 @@ type DiskConfig struct {
 // defaults returns a Config with all values set to the shipped defaults.
 // Beta builds include a testnet wallet so operators can start immediately.
 func defaults() Config {
-	gateway := "https://gateway.owlrun.me"
+	gateway := "https://node.owlrun.me"
 	var wallet string
 
 	if buildinfo.IsBeta() {
@@ -78,20 +88,24 @@ func defaults() Config {
 
 	return Config{
 		Account: AccountConfig{
-			Wallet: wallet,
+			Wallet:          wallet,
+			RedeemThreshold: 500,
 		},
 		Marketplace: MarketplaceConfig{
 			Gateway:       gateway,
 			AllowOverride: true,
 		},
 		Inference: InferenceConfig{
-			ModelAuto:  true,
-			MaxVRAMPct: 80,
+			ModelAuto:     true,
+			KeepWarm:      true,
+			MaxVRAMPct:    80,
+			ContextLength: 8192,
 		},
 		Idle: IdleConfig{
 			TriggerMinutes: 10,
 			GPUThreshold:   15,
 			WatchProcesses: true,
+			JobMode:        "idle",
 		},
 		Disk: DiskConfig{
 			WarnThresholdPct: 30,
@@ -101,8 +115,12 @@ func defaults() Config {
 }
 
 // NeedsWallet returns true if the user hasn't set their own payout wallet.
-// This is the case when the wallet is empty or still the beta default.
+// This is the case when there's no Lightning address AND the legacy wallet
+// is empty or still the beta default.
 func NeedsWallet(cfg *Config) bool {
+	if cfg.Account.LightningAddress != "" {
+		return false
+	}
 	return cfg.Account.Wallet == "" || cfg.Account.Wallet == betaWallet
 }
 
@@ -116,11 +134,26 @@ func EnsureNodeID(cfg *Config) string {
 	cfg.Account.NodeID = id
 	// Best-effort persist — if it fails the node gets a new ID next restart,
 	// which is acceptable until the installer sets up the conf file properly.
-	persistNodeID(id)
+	persistKey("node_id", id)
 	return id
 }
 
-func persistNodeID(id string) {
+// EnsureAPIKey returns the provider API key from cfg, generating and persisting
+// a new owlr_prov_<48 hex chars> key if the config doesn't have one yet.
+// Normally bootstrap() handles this, but this is a safety net for existing
+// configs that were created before auto-generation was added.
+func EnsureAPIKey(cfg *Config) string {
+	if cfg.Account.APIKey != "" {
+		return cfg.Account.APIKey
+	}
+	key := generateAPIKey()
+	cfg.Account.APIKey = key
+	persistKey("api_key", key)
+	return key
+}
+
+// persistKey writes a single key to the [account] section of the config file.
+func persistKey(key, value string) {
 	path := Path()
 	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
 		return
@@ -129,23 +162,164 @@ func persistNodeID(id string) {
 	if err != nil {
 		f = ini.Empty()
 	}
-	f.Section("account").Key("node_id").SetValue(id)
+	f.Section("account").Key(key).SetValue(value)
 	_ = f.SaveTo(path)
+}
+
+// SaveLightningAddress persists a Lightning address to the config file.
+func SaveLightningAddress(addr string) error {
+	path := Path()
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		return err
+	}
+	f, err := ini.LooseLoad(path)
+	if err != nil {
+		f = ini.Empty()
+	}
+	f.Section("account").Key("lightning_address").SetValue(addr)
+	return f.SaveTo(path)
+}
+
+// SaveRedeemThreshold persists a redeem threshold (sats) to the config file.
+func SaveRedeemThreshold(threshold int) error {
+	path := Path()
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		return err
+	}
+	f, err := ini.LooseLoad(path)
+	if err != nil {
+		f = ini.Empty()
+	}
+	f.Section("account").Key("redeem_threshold").SetValue(fmt.Sprintf("%d", threshold))
+	return f.SaveTo(path)
+}
+
+// SaveFreeTierPct persists the free tier donation percentage to the config file.
+func SaveFreeTierPct(pct int) error {
+	path := Path()
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		return err
+	}
+	f, err := ini.LooseLoad(path)
+	if err != nil {
+		f = ini.Empty()
+	}
+	f.Section("account").Key("free_tier_pct").SetValue(fmt.Sprintf("%d", pct))
+	return f.SaveTo(path)
+}
+
+// SaveKeepWarm persists the keep-warm setting to the config file.
+func SaveKeepWarm(on bool) error {
+	path := Path()
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		return err
+	}
+	f, err := ini.LooseLoad(path)
+	if err != nil {
+		f = ini.Empty()
+	}
+	v := "false"
+	if on {
+		v = "true"
+	}
+	f.Section("inference").Key("keep_warm").SetValue(v)
+	return f.SaveTo(path)
+}
+
+// SaveContextLength persists the Ollama context length to the config file.
+func SaveContextLength(ctxLen int) error {
+	path := Path()
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		return err
+	}
+	f, err := ini.LooseLoad(path)
+	if err != nil {
+		f = ini.Empty()
+	}
+	f.Section("inference").Key("context_length").SetValue(fmt.Sprintf("%d", ctxLen))
+	return f.SaveTo(path)
+}
+
+// SaveJobMode persists the job acceptance mode to the config file.
+func SaveJobMode(mode string) error {
+	path := Path()
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		return err
+	}
+	f, err := ini.LooseLoad(path)
+	if err != nil {
+		f = ini.Empty()
+	}
+	f.Section("idle").Key("job_mode").SetValue(mode)
+	return f.SaveTo(path)
 }
 
 // Path returns the default config file location: ~/.owlrun/owlrun.conf
 func Path() string {
-	home, _ := os.UserHomeDir()
+	home, err := os.UserHomeDir()
+	if err != nil || home == "" {
+		home = os.Getenv("HOME")
+	}
+	if home == "" {
+		home = os.TempDir()
+	}
 	return filepath.Join(home, ".owlrun", "owlrun.conf")
 }
 
+// generateAPIKey creates a new owlr_prov_<48 hex chars> provider key.
+func generateAPIKey() string {
+	b := make([]byte, 24)
+	if _, err := rand.Read(b); err != nil {
+		b = []byte(uuid.New().String() + uuid.New().String())[:24]
+	}
+	return "owlr_prov_" + hex.EncodeToString(b)
+}
+
+// bootstrap writes a fresh config file with defaults, a random node ID,
+// and a random provider API key. Called automatically when no config exists.
+func bootstrap(cfg *Config) {
+	cfg.Account.NodeID = uuid.New().String()
+	cfg.Account.APIKey = generateAPIKey()
+
+	path := Path()
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		return
+	}
+	f := ini.Empty()
+	sec := f.Section("account")
+	sec.Key("node_id").SetValue(cfg.Account.NodeID)
+	sec.Key("api_key").SetValue(cfg.Account.APIKey)
+
+	mkt := f.Section("marketplace")
+	mkt.Key("gateway").SetValue(cfg.Marketplace.Gateway)
+	mkt.Key("allow_override").SetValue("true")
+
+	inf := f.Section("inference")
+	inf.Key("model_auto").SetValue("true")
+	inf.Key("max_vram_pct").SetValue("80")
+	inf.Key("context_length").SetValue("8192")
+
+	idl := f.Section("idle")
+	idl.Key("trigger_minutes").SetValue("10")
+	idl.Key("gpu_threshold").SetValue("15")
+	idl.Key("watch_processes").SetValue("true")
+
+	dsk := f.Section("disk")
+	dsk.Key("warn_threshold_pct").SetValue("30")
+	dsk.Key("min_model_space_gb").SetValue("8")
+
+	_ = f.SaveTo(path)
+}
+
 // Load reads owlrun.conf and returns a Config. If the file does not exist,
-// all defaults are used. Partial files are also safe — missing keys use defaults.
+// a default config is created with auto-generated node ID and provider key.
+// Partial files are also safe — missing keys use defaults.
 func Load() (Config, error) {
 	cfg := defaults()
 	path := Path()
 
 	if _, err := os.Stat(path); os.IsNotExist(err) {
+		bootstrap(&cfg)
 		return cfg, nil
 	}
 
@@ -159,6 +333,9 @@ func Load() (Config, error) {
 		cfg.Account.APIKey = sec.Key("api_key").String()
 		cfg.Account.Wallet = sec.Key("wallet").String()
 		cfg.Account.ReferralCode = sec.Key("referral_code").String()
+		cfg.Account.LightningAddress = sec.Key("lightning_address").String()
+		cfg.Account.RedeemThreshold = sec.Key("redeem_threshold").MustInt(500)
+		cfg.Account.FreeTierPct = sec.Key("free_tier_pct").MustInt(0)
 	}
 
 	if sec, err := f.GetSection("marketplace"); err == nil {
@@ -175,18 +352,24 @@ func Load() (Config, error) {
 		cfg.Marketplace.ProxyBase = sec.Key("proxy_base").String()
 		cfg.Marketplace.Region = sec.Key("region").String()
 		cfg.Marketplace.AllowOverride = sec.Key("allow_override").MustBool(true)
+		cfg.Marketplace.Debug = sec.Key("debug").MustBool(false)
 	}
 
 	if sec, err := f.GetSection("inference"); err == nil {
 		cfg.Inference.ModelAuto = sec.Key("model_auto").MustBool(true)
+		cfg.Inference.KeepWarm = sec.Key("keep_warm").MustBool(true)
 		cfg.Inference.MaxVRAMPct = sec.Key("max_vram_pct").MustInt(80)
 		cfg.Inference.Model = sec.Key("model").String()
+		cfg.Inference.ContextLength = sec.Key("context_length").MustInt(8192)
 	}
 
 	if sec, err := f.GetSection("idle"); err == nil {
 		cfg.Idle.TriggerMinutes = sec.Key("trigger_minutes").MustInt(10)
 		cfg.Idle.GPUThreshold = sec.Key("gpu_threshold").MustInt(15)
 		cfg.Idle.WatchProcesses = sec.Key("watch_processes").MustBool(true)
+		if jm := sec.Key("job_mode").String(); jm == "never" || jm == "always" {
+			cfg.Idle.JobMode = jm
+		}
 	}
 
 	if sec, err := f.GetSection("disk"); err == nil {

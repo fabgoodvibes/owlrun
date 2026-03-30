@@ -28,6 +28,7 @@ import (
 	"github.com/fabgoodvibes/owlrun/internal/idle"
 	"github.com/fabgoodvibes/owlrun/internal/inference"
 	"github.com/fabgoodvibes/owlrun/internal/marketplace"
+	"github.com/fabgoodvibes/owlrun/internal/wallet"
 	"github.com/getlantern/systray"
 )
 
@@ -47,9 +48,11 @@ const (
 type Agent struct {
 	mu             sync.Mutex
 	state          State
-	manuallyPaused bool // true = user explicitly paused; overrides idle monitor
-	starting       bool // true = Ollama startup goroutine is in progress
+	errorDetail    string // user-facing error message when state=StateError
+	manuallyPaused bool   // true = user explicitly paused; overrides idle monitor
+	starting       bool   // true = Ollama startup goroutine is in progress
 	model          string // currently loaded Ollama model tag
+	jobMode        string // "never", "idle", "always"
 	cfg            config.Config
 	nodeID         string
 	gpuInfo        gpu.Info
@@ -57,7 +60,9 @@ type Agent struct {
 	ollamaMgr      *inference.Manager
 	tracker        *earnings.Tracker
 	gateway        *marketplace.Router
+	ecash          *wallet.Wallet
 	dash           *dashboard.Server
+	mockMode       bool
 
 	// Tray menu items updated at runtime
 	mStatus    *systray.MenuItem
@@ -68,15 +73,39 @@ type Agent struct {
 	mWalletWarn *systray.MenuItem // shown when wallet not configured
 	mDiskWarn   *systray.MenuItem // shown only when disk is low
 	mQuit       *systray.MenuItem
+
+	// Job mode submenu
+	mJobMode      *systray.MenuItem
+	mJobNever     *systray.MenuItem
+	mJobIdle      *systray.MenuItem
+	mJobAlways    *systray.MenuItem
 }
 
 // Run detects the GPU, then starts the system tray. Blocks until Quit.
 // Must be called from the main goroutine.
-func Run(cfg config.Config, dash *dashboard.Server) {
+func Run(cfg config.Config, dash *dashboard.Server, mockMode bool) {
 	nodeID := config.EnsureNodeID(&cfg)
+	config.EnsureAPIKey(&cfg)
 	info := gpu.Detect()
 	monitor := gpu.NewMonitor(info, 10*time.Second)
 	tracker := earnings.New()
+
+	log.Printf("owlrun: [debug] cfg.Marketplace.Gateway = %q", cfg.Marketplace.Gateway)
+	w := wallet.New(cfg.Marketplace.Gateway, cfg.Account.APIKey)
+
+	a := &Agent{
+		cfg:        cfg,
+		nodeID:     nodeID,
+		gpuInfo:    info,
+		gpuMonitor: monitor,
+		state:      StateIdle,
+		jobMode:    cfg.Idle.JobMode,
+		tracker:    tracker,
+		ecash:      w,
+		ollamaMgr:  inference.New(info),
+		dash:       dash,
+		mockMode:   mockMode,
+	}
 
 	gw := marketplace.New(
 		cfg.Marketplace.Gateway,
@@ -85,29 +114,40 @@ func Run(cfg config.Config, dash *dashboard.Server) {
 		nodeID,
 		cfg.Account.Wallet,
 		cfg.Account.ReferralCode,
+		cfg.Account.LightningAddress,
+		cfg.Account.RedeemThreshold,
+		cfg.Account.FreeTierPct,
 		cfg.Marketplace.Region,
-		"0.1.0",
+		buildinfo.Version,
 		info,
 		func() (int, int, int, float64) {
 			stats := monitor.Latest()
 			return stats.UtilizationPct, stats.VRAMFreeMB, stats.TemperatureC, stats.PowerDrawW
 		},
 		func(model string, tokens int, earnedUSD float64) {
-			tracker.Record(model, tokens, earnedUSD)
+			if err := tracker.Record(model, tokens, earnedUSD); err != nil {
+				log.Printf("owlrun: failed to record earnings: %v", err)
+			}
+		},
+		func() {
+			a.mu.Lock()
+			a.state = StateEarning
+			a.refreshMenuLocked()
+			a.mu.Unlock()
+		},
+		func(balanceSats int64) {
+			a.ecash.AutoClaim(balanceSats)
 		},
 	)
+	a.gateway = gw
 
-	a := &Agent{
-		cfg:        cfg,
-		nodeID:     nodeID,
-		gpuInfo:    info,
-		gpuMonitor: monitor,
-		state:      StateIdle,
-		tracker:    tracker,
-		ollamaMgr:  inference.New(info),
-		gateway:    gw,
-		dash:       dash,
+	// Set initial context length from config.
+	if cfg.Inference.ContextLength > 0 {
+		a.ollamaMgr.SetContextLength(cfg.Inference.ContextLength)
+		gw.SetContextLength(cfg.Inference.ContextLength)
 	}
+	gw.SetDebug(cfg.Marketplace.Debug)
+
 	systray.Run(a.onReady, a.onExit)
 }
 
@@ -139,7 +179,15 @@ func (a *Agent) onReady() {
 
 	// Actions
 	a.mToggle = systray.AddMenuItem(a.toggleLabel(), "Pause or resume Owlrun")
-	a.mDashboard = systray.AddMenuItem("Open Dashboard", "Open localhost:8080")
+	a.mDashboard = systray.AddMenuItem("Open Dashboard", "Open localhost:19131")
+
+	// Job mode submenu
+	a.mJobMode = systray.AddMenuItem("Accept Jobs", "")
+	a.mJobNever = a.mJobMode.AddSubMenuItem("Never", "Never accept jobs")
+	a.mJobIdle = a.mJobMode.AddSubMenuItem(fmt.Sprintf("After idle %dm", a.cfg.Idle.TriggerMinutes), "Accept jobs after idle timeout")
+	a.mJobAlways = a.mJobMode.AddSubMenuItem("Always", "Always accept jobs")
+	a.applyJobModeChecks()
+
 	systray.AddSeparator()
 	a.mDiskWarn = systray.AddMenuItem("", "")
 	a.mDiskWarn.Disable()
@@ -162,6 +210,132 @@ func (a *Agent) onReady() {
 
 	if a.dash != nil {
 		a.dash.SetProvider(a.statusSnapshot)
+		a.dash.SetTracker(a.tracker)
+		a.dash.SetClaimer(func(amountSats int64) (string, error) {
+			return a.ecash.Claim(amountSats)
+		})
+		a.dash.SetLightningAddressSetter(func(addr string) error {
+			if err := config.SaveLightningAddress(addr); err != nil {
+				return err
+			}
+			a.mu.Lock()
+			a.cfg.Account.LightningAddress = addr
+			a.mu.Unlock()
+			a.gateway.SetLightningAddress(addr)
+			return nil
+		})
+		a.dash.SetRedeemThresholdSetter(func(threshold int) error {
+			if err := config.SaveRedeemThreshold(threshold); err != nil {
+				return err
+			}
+			a.mu.Lock()
+			a.cfg.Account.RedeemThreshold = threshold
+			a.mu.Unlock()
+			a.gateway.SetRedeemThreshold(threshold)
+			return nil
+		})
+		a.dash.SetJobModeSetter(func(mode string) error {
+			if err := config.SaveJobMode(mode); err != nil {
+				return err
+			}
+			a.setJobMode(mode)
+			return nil
+		})
+		a.dash.SetKeepWarmSetter(func(on bool) error {
+			if err := config.SaveKeepWarm(on); err != nil {
+				return err
+			}
+			a.mu.Lock()
+			a.cfg.Inference.KeepWarm = on
+			model := a.model
+			a.mu.Unlock()
+			if on && model != "" {
+				a.ollamaMgr.StartKeepWarm(model)
+			} else {
+				a.ollamaMgr.StopKeepWarm()
+			}
+			return nil
+		})
+		a.dash.SetFreeTierPctSetter(func(pct int) error {
+			if err := config.SaveFreeTierPct(pct); err != nil {
+				return err
+			}
+			a.mu.Lock()
+			a.cfg.Account.FreeTierPct = pct
+			a.mu.Unlock()
+			a.gateway.SetFreeTierPct(pct)
+			return nil
+		})
+		a.dash.SetContextLengthSetter(func(ctxLen int) error {
+			if err := config.SaveContextLength(ctxLen); err != nil {
+				return err
+			}
+			a.mu.Lock()
+			a.cfg.Inference.ContextLength = ctxLen
+			model := a.model
+			a.mu.Unlock()
+			a.ollamaMgr.SetContextLength(ctxLen)
+			a.gateway.SetContextLength(ctxLen)
+			log.Printf("owlrun: context length changed to %d", ctxLen)
+			// Reload current model with new context length.
+			if model != "" {
+				if err := a.ollamaMgr.LoadModel(model); err != nil {
+					log.Printf("owlrun: reload model with new context length: %v", err)
+				}
+			}
+			return nil
+		})
+		a.dash.SetModelSwitcher(func(model string) error {
+			if !a.ollamaMgr.ModelInstalled(model) {
+				return fmt.Errorf("model %s not installed — download it first", model)
+			}
+			log.Printf("owlrun: switching primary model to %s", model)
+			if err := a.ollamaMgr.LoadModel(model); err != nil {
+				return fmt.Errorf("failed to load model: %w", err)
+			}
+			a.mu.Lock()
+			a.model = model
+			a.mu.Unlock()
+			// Re-register with all installed models, new primary first.
+			models, _ := a.ollamaMgr.SelectModels(a.gpuInfo.VRAMTotalGB, a.cfg.Inference.MaxVRAMPct)
+			a.gateway.SetModels(models)
+			go a.gateway.Reconnect()
+			return nil
+		})
+		a.dash.SetModelRemover(func(model string) error {
+			a.mu.Lock()
+			active := a.model
+			a.mu.Unlock()
+			if model == active {
+				return fmt.Errorf("cannot remove the active model — switch to another first")
+			}
+			if err := a.ollamaMgr.DeleteModel(model); err != nil {
+				return err
+			}
+			log.Printf("owlrun: removed model %s", model)
+			models, _ := a.ollamaMgr.SelectModels(a.gpuInfo.VRAMTotalGB, a.cfg.Inference.MaxVRAMPct)
+			a.gateway.SetModels(models)
+			go a.gateway.Reconnect()
+			return nil
+		})
+		a.dash.SetModelPuller(func(model string) <-chan dashboard.PullModelProgress {
+			out := make(chan dashboard.PullModelProgress, 8)
+			go func() {
+				defer close(out)
+				for p := range a.ollamaMgr.PullModel(model) {
+					pp := dashboard.PullModelProgress{
+						Status:    p.Status,
+						Total:     p.Total,
+						Completed: p.Completed,
+					}
+					if p.Err != nil {
+						pp.Error = p.Err.Error()
+					}
+					out <- pp
+				}
+			}()
+			return out
+		})
 	}
 
 	go a.gpuMonitor.Start()
@@ -186,7 +360,13 @@ func (a *Agent) handleClicks() {
 		case <-a.mToggle.ClickedCh:
 			a.togglePause()
 		case <-a.mDashboard.ClickedCh:
-			openBrowser("http://localhost:8080")
+			openBrowser("http://localhost:19131")
+		case <-a.mJobNever.ClickedCh:
+			a.setJobMode("never")
+		case <-a.mJobIdle.ClickedCh:
+			a.setJobMode("idle")
+		case <-a.mJobAlways.ClickedCh:
+			a.setJobMode("always")
 		case <-a.mQuit.ClickedCh:
 			systray.Quit()
 		}
@@ -229,10 +409,16 @@ func (a *Agent) idleMonitorLoop() {
 func (a *Agent) checkAndUpdateState() {
 	a.mu.Lock()
 	paused := a.manuallyPaused
+	mode := a.jobMode
 	a.mu.Unlock()
 
 	if paused {
 		return // user has manually paused; do not touch state
+	}
+
+	// "never" mode: never start earning.
+	if mode == "never" {
+		return
 	}
 
 	a.mu.Lock()
@@ -240,6 +426,10 @@ func (a *Agent) checkAndUpdateState() {
 	a.mu.Unlock()
 
 	if st == StateEarning || st == StateReady || st == StateMissingWallet {
+		// In "always" mode, never stop due to user activity.
+		if mode == "always" {
+			return
+		}
 		// Ollama is running. Only stop if the user returns or a game launches.
 		userBack := idle.IdleDuration() < time.Duration(a.cfg.Idle.TriggerMinutes)*time.Minute
 		gameRunning := a.cfg.Idle.WatchProcesses && idle.IsGameRunning()
@@ -253,13 +443,13 @@ func (a *Agent) checkAndUpdateState() {
 		return
 	}
 
-	// Not currently earning — use full idle check (including GPU threshold).
-	systemIdle := idle.IsSystemIdle(a.cfg.Idle, a.gpuMonitor.UtilizationPct())
+	// "always" mode: skip idle check, start immediately.
+	shouldStart := mode == "always" || idle.IsSystemIdle(a.cfg.Idle, a.gpuMonitor.UtilizationPct())
 
 	a.mu.Lock()
 	defer a.mu.Unlock()
 
-	if systemIdle && a.state == StateIdle && !a.starting {
+	if shouldStart && a.state == StateIdle && !a.starting {
 		a.starting = true
 		go a.startEarning()
 	}
@@ -268,28 +458,69 @@ func (a *Agent) checkAndUpdateState() {
 // startEarning runs the full Ollama startup pipeline in a background goroutine.
 // On success it transitions to Ready/MissingWallet; on failure it goes to Error.
 func (a *Agent) startEarning() {
-	for _, s := range []struct {
-		name string
-		fn   func() error
-	}{
-		{"install ollama", a.ollamaMgr.EnsureInstalled},
-		{"start ollama", a.ollamaMgr.Start},
-	} {
-		if err := s.fn(); err != nil {
-			log.Printf("owlrun: %s: %v", s.name, err)
+	// Mock mode: start fake Ollama server, skip real Ollama entirely.
+	if a.mockMode {
+		mockSrv, err := inference.StartMockOllama()
+		if err != nil {
+			log.Printf("owlrun: mock ollama failed: %v", err)
 			a.mu.Lock()
 			a.starting = false
 			a.state = StateError
+			a.errorDetail = "Mock Ollama failed to start: " + err.Error()
 			a.refreshMenuLocked()
 			a.mu.Unlock()
 			return
 		}
+		mockAddr := "http://" + mockSrv.Addr
+		a.ollamaMgr.SetHost(mockAddr)
+		a.gateway.SetOllamaBase(mockAddr)
+		log.Printf("owlrun: mock mode — using fake model %s on %s", inference.MockModel(), mockAddr)
+
+		a.mu.Lock()
+		a.model = inference.MockModel()
+		a.starting = false
+		if config.NeedsWallet(&a.cfg) {
+			a.state = StateMissingWallet
+		} else {
+			a.state = StateReady
+		}
+		a.refreshMenuLocked()
+		a.mu.Unlock()
+		a.gateway.SetModels([]string{inference.MockModel()})
+		a.gateway.Connect()
+		log.Printf("owlrun: mock mode ready — connecting to gateway")
+		return
 	}
 
-	model := a.cfg.Inference.Model
-	if model == "" {
-		chosen, suggestions := a.ollamaMgr.SelectModel(a.gpuInfo.VRAMTotalGB, a.cfg.Inference.MaxVRAMPct)
-		if chosen == "" {
+	if err := a.ollamaMgr.EnsureInstalled(); err != nil {
+		log.Printf("owlrun: install ollama: %v", err)
+		a.mu.Lock()
+		a.starting = false
+		a.state = StateError
+		a.errorDetail = "Ollama is not installed. Download it from ollama.com/download, install it, then restart Owlrun."
+		a.refreshMenuLocked()
+		a.mu.Unlock()
+		return
+	}
+	if err := a.ollamaMgr.Start(); err != nil {
+		log.Printf("owlrun: start ollama: %v", err)
+		a.mu.Lock()
+		a.starting = false
+		a.state = StateError
+		a.errorDetail = "Ollama failed to start. Make sure Ollama is installed (ollama.com/download) and try restarting Owlrun."
+		a.refreshMenuLocked()
+		a.mu.Unlock()
+		return
+	}
+
+	var models []string
+	if a.cfg.Inference.Model != "" {
+		models = []string{a.cfg.Inference.Model}
+		log.Printf("owlrun: starting — model %s", a.cfg.Inference.Model)
+	} else {
+		var suggestions []string
+		models, suggestions = a.ollamaMgr.SelectModels(a.gpuInfo.VRAMTotalGB, a.cfg.Inference.MaxVRAMPct)
+		if len(models) == 0 {
 			log.Printf("owlrun: no models installed — install one first, then restart")
 			for _, s := range suggestions {
 				log.Printf("  ollama pull %s", s)
@@ -298,15 +529,14 @@ func (a *Agent) startEarning() {
 			a.mu.Lock()
 			a.starting = false
 			a.state = StateError
+			a.errorDetail = "No AI models installed. Open the dashboard at localhost:19131 and download a model, or run: ollama pull qwen2.5:0.5b"
 			a.refreshMenuLocked()
 			a.mu.Unlock()
 			return
 		}
-		model = chosen
-		log.Printf("owlrun: using installed model %s", model)
-	} else {
-		log.Printf("owlrun: starting — model %s", model)
+		log.Printf("owlrun: found %d installed models, primary: %s", len(models), models[0])
 	}
+	model := models[0] // primary model — loaded into VRAM
 
 	a.mu.Lock()
 	a.model = model
@@ -318,8 +548,11 @@ func (a *Agent) startEarning() {
 	}
 	a.refreshMenuLocked()
 	a.mu.Unlock()
-	a.gateway.SetModel(model)
+	a.gateway.SetModels(models)
 	a.gateway.Connect()
+	if a.cfg.Inference.KeepWarm {
+		a.ollamaMgr.StartKeepWarm(model)
+	}
 	log.Printf("owlrun: ready — connecting to gateway")
 }
 
@@ -343,6 +576,7 @@ func (a *Agent) loadOrPull(model string) error {
 
 // stopEarning disconnects from the gateway and shuts down Ollama.
 func (a *Agent) stopEarning() {
+	a.ollamaMgr.StopKeepWarm()
 	a.gateway.Disconnect()
 	if err := a.ollamaMgr.Stop(); err != nil {
 		log.Printf("owlrun: stop ollama: %v", err)
@@ -470,6 +704,49 @@ func (a *Agent) checkDisk(showDialogIfCritical bool) {
 	}
 }
 
+// setJobMode switches the runtime job acceptance mode and updates the tray.
+func (a *Agent) setJobMode(mode string) {
+	a.mu.Lock()
+	old := a.jobMode
+	a.jobMode = mode
+	a.mu.Unlock()
+	a.applyJobModeChecks()
+	log.Printf("owlrun: job mode changed: %s → %s", old, mode)
+
+	// If switching to "never", stop earning immediately.
+	if mode == "never" && (old == "idle" || old == "always") {
+		a.mu.Lock()
+		wasEarning := a.state == StateEarning || a.state == StateReady || a.state == StateMissingWallet
+		if wasEarning {
+			a.state = StateIdle
+			a.refreshMenuLocked()
+		}
+		a.mu.Unlock()
+		if wasEarning {
+			go a.stopEarning()
+		}
+	}
+}
+
+// applyJobModeChecks updates the check marks on the job mode submenu.
+func (a *Agent) applyJobModeChecks() {
+	a.mu.Lock()
+	mode := a.jobMode
+	a.mu.Unlock()
+
+	a.mJobNever.Uncheck()
+	a.mJobIdle.Uncheck()
+	a.mJobAlways.Uncheck()
+	switch mode {
+	case "never":
+		a.mJobNever.Check()
+	case "always":
+		a.mJobAlways.Check()
+	default:
+		a.mJobIdle.Check()
+	}
+}
+
 func fmtToday(v float64) string { return fmt.Sprintf("Today:  $%.2f", v) }
 func fmtTotal(v float64) string { return fmt.Sprintf("Total:  $%.2f", v) }
 
@@ -479,15 +756,20 @@ func (a *Agent) statusSnapshot() dashboard.Status {
 	a.mu.Lock()
 	state := a.state
 	model := a.model
+	jobMode := a.jobMode
 	a.mu.Unlock()
 
 	var s dashboard.Status
+	s.JobMode = jobMode
 	s.NodeID = a.nodeID
+	s.ProviderKey = a.cfg.Account.APIKey
 	s.Version = buildinfo.Version
 	s.Network = buildinfo.Network
 	s.Wallet.Address = a.cfg.Account.Wallet
 	if config.NeedsWallet(&a.cfg) {
-		s.Wallet.Warning = "Set your Solana wallet in <code>~/.owlrun/owlrun.conf</code> under <code>[account]</code> → <code>wallet = YOUR_SOLANA_PUBKEY</code> to receive payouts."
+		s.Wallet.Warning = "Set your Lightning address in the Wallet section to start earning Bitcoin."
+	} else if a.cfg.Account.LightningAddress != "" {
+		s.Wallet.Configured = "Wallet configured at " + a.cfg.Account.LightningAddress
 	}
 	switch state {
 	case StateEarning:
@@ -498,6 +780,7 @@ func (a *Agent) statusSnapshot() dashboard.Status {
 		s.State = "wallet"
 	case StateError:
 		s.State = "error"
+		s.ErrorDetail = a.errorDetail
 	case StatePaused:
 		s.State = "paused"
 	default:
@@ -515,8 +798,22 @@ func (a *Agent) statusSnapshot() dashboard.Status {
 	s.GPU.TempC = gpuStats.TemperatureC
 	s.GPU.PowerW = gpuStats.PowerDrawW
 
-	// Model
+	// Model + available models
 	s.Model = model
+	installed := a.ollamaMgr.ListInstalled()
+	installedSet := make(map[string]bool, len(installed))
+	for _, m := range installed {
+		installedSet[m] = true
+	}
+	for _, mi := range gpu.AllModelInfos(a.gpuInfo.VRAMTotalGB, a.cfg.Inference.MaxVRAMPct) {
+		s.AvailableModels = append(s.AvailableModels, dashboard.AvailableModel{
+			Tag:       mi.Tag,
+			VramGB:    mi.VramGB,
+			Installed: installedSet[mi.Tag],
+			Active:    mi.Tag == model,
+			Fits:      mi.Fits,
+		})
+	}
 
 	// Earnings
 	snap := a.tracker.Get()
@@ -525,13 +822,86 @@ func (a *Agent) statusSnapshot() dashboard.Status {
 
 	// Gateway
 	gwStats := a.gateway.Stats()
-	s.Gateway.Connected = state == StateEarning
+	s.Models = gwStats.Models
+	s.Gateway.Connected = gwStats.Connected
 	s.Gateway.GatewayStatus = gwStats.Status
 	s.Gateway.JobsToday = gwStats.JobsToday
 	s.Gateway.TokensToday = gwStats.TokensToday
 	s.Gateway.EarnedTodayUSD = gwStats.EarnedTodayUSD
+	s.Gateway.EarnedTodaySats = gwStats.EarnedTodaySats
+	s.Gateway.EarnedTotalSats = gwStats.EarnedTotalSats
 	s.Gateway.QueueDepthGlobal = gwStats.QueueDepthGlobal
-	s.Gateway.NextPayoutEpoch = gwStats.NextPayoutEpoch
+	s.LightningAddress = a.cfg.Account.LightningAddress
+	s.RedeemThreshold = a.cfg.Account.RedeemThreshold
+	s.ContextLength = a.cfg.Inference.ContextLength
+	s.FreeTierPct = a.cfg.Account.FreeTierPct
+	s.KarmaScore = gwStats.KarmaScore
+	s.KarmaTier = gwStats.KarmaTier
+	s.FreeTierJobs = gwStats.FreeTierJobs
+
+	// Model pricing from gateway
+	if gwStats.ModelPricing != nil {
+		s.ModelPricing = &dashboard.ModelPricingInfo{
+			PerMInputUSD:  gwStats.ModelPricing.PerMInputUSD,
+			PerMOutputUSD: gwStats.ModelPricing.PerMOutputUSD,
+		}
+	}
+	if len(gwStats.AllModelPricing) > 0 {
+		s.AllModelPricing = make(map[string]*dashboard.ModelPricingInfo, len(gwStats.AllModelPricing))
+		for tag, p := range gwStats.AllModelPricing {
+			s.AllModelPricing[tag] = &dashboard.ModelPricingInfo{
+				PerMInputUSD:  p.PerMInputUSD,
+				PerMOutputUSD: p.PerMOutputUSD,
+			}
+		}
+	}
+
+	// BTC price from gateway
+	s.BtcPrice = dashboard.BtcPriceInfo{
+		LiveUsd:    gwStats.BtcPrice.LiveUsd,
+		YesterdayFix: gwStats.BtcPrice.YesterdayFix,
+		DailyAvg:   gwStats.BtcPrice.DailyAvg,
+		WeeklyAvg:  gwStats.BtcPrice.WeeklyAvg,
+		Status:     gwStats.BtcPrice.Status,
+	}
+
+	// Map broadcasts from gateway to dashboard
+	for _, b := range gwStats.Broadcasts {
+		s.Broadcasts = append(s.Broadcasts, dashboard.BroadcastMsg{
+			Title:     b.Title,
+			Message:   b.Message,
+			Severity:  b.Severity,
+			Timestamp: b.Timestamp,
+		})
+	}
+
+	// Sats wallet
+	if a.ecash != nil {
+		ws := a.ecash.GetStats(gwStats.BalanceSats, gwStats.BtcPrice.LiveUsd)
+		var hist []dashboard.TokenHistoryItem
+		for _, t := range ws.TokenHistory {
+			hist = append(hist, dashboard.TokenHistoryItem{Token: t.Token, Sats: t.Sats, ClaimedAt: t.ClaimedAt})
+		}
+		var wdHist []dashboard.WithdrawHistoryItem
+		for _, w := range gwStats.WithdrawHistory {
+			wdHist = append(wdHist, dashboard.WithdrawHistoryItem{
+				AmountSats:  w.AmountSats,
+				PaymentHash: w.PaymentHash,
+				Timestamp:   w.Timestamp,
+			})
+		}
+		s.SatsWallet = dashboard.SatsWalletInfo{
+			GatewaySats:     ws.GatewaySats,
+			LocalSats:       ws.LocalSats,
+			TotalSats:       ws.TotalSats,
+			USDApprox:       ws.USDApprox,
+			ProofCount:      ws.ProofCount,
+			LastClaim:       ws.LastClaim,
+			LastToken:       ws.LastToken,
+			TokenHistory:    hist,
+			WithdrawHistory: wdHist,
+		}
+	}
 
 	// Disk
 	diskInfo, err := disk.Check(disk.OllamaModelsDir())

@@ -24,10 +24,12 @@ const (
 // ModelSizeGB maps known Ollama model tags to approximate download sizes in GB.
 // Used for pre-download space checks (Step 6). Values are compressed file sizes.
 var ModelSizeGB = map[string]float64{
-	"llama3.1:70b-q4_K_M":      40.0,
-	"llama3.1:70b-q2_K":        26.0,
-	"qwen2.5-coder:32b-q4_K_M": 19.0,
-	"llama3.1:8b-q8_0":         8.5,
+	"llama3.1:70b-instruct-q4_K_M": 40.0,
+	"llama3.3:70b":                 40.0,
+	"llama3.1:70b-instruct-q2_K":   26.0,
+	"qwen2.5-coder:32b-instruct-q4_K_M": 19.0,
+	"mistral-small:24b":            14.0,
+	"llama3.1:8b-instruct-q8_0":    8.5,
 	"llama3.1:8b":               4.7,
 	"mistral:7b":                4.1,
 	"qwen2.5-coder:7b":         4.5,

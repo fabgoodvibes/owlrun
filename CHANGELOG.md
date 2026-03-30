@@ -9,7 +9,7 @@
 - Ollama lifecycle management (auto-install, start, pull, stop)
 - Earnings tracker with SQLite (daily + all-time)
 - Gateway connector with WebSocket control channel and HTTP/2 job proxy
-- Local dashboard at localhost:8080
+- Local dashboard at localhost:19131
 - One-line installers for Windows (PowerShell) and Unix (bash)
 - Auto-start registration (Task Scheduler / systemd / launchd)
 - CI/CD with GitHub Actions — builds all platforms, deploys to CDN

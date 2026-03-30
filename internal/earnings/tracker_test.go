@@ -37,8 +37,12 @@ func TestGet_EmptyDB(t *testing.T) {
 func TestRecord_And_Get(t *testing.T) {
 	tr := newTestTracker(t)
 
-	tr.Record("llama3:8b", 500, 0.01)
-	tr.Record("llama3:8b", 1000, 0.02)
+	if err := tr.Record("llama3:8b", 500, 0.01); err != nil {
+		t.Fatalf("Record: %v", err)
+	}
+	if err := tr.Record("llama3:8b", 1000, 0.02); err != nil {
+		t.Fatalf("Record: %v", err)
+	}
 
 	snap := tr.Get()
 	const want = 0.03
@@ -63,7 +67,9 @@ func TestRecord_TodayVsTotal(t *testing.T) {
 	tr.mu.Unlock()
 
 	// Today's job.
-	tr.Record("llama3:8b", 200, 0.10)
+	if err := tr.Record("llama3:8b", 200, 0.10); err != nil {
+		t.Fatalf("Record: %v", err)
+	}
 
 	snap := tr.Get()
 	if snap.Today < 0.099 || snap.Today > 0.101 {
@@ -83,10 +89,12 @@ func TestGet_NilDB_Safe(t *testing.T) {
 	}
 }
 
-func TestRecord_NilDB_Safe(t *testing.T) {
+func TestRecord_NilDB_ReturnsError(t *testing.T) {
 	tr := &Tracker{}
-	// Must not panic.
-	tr.Record("model", 100, 0.01)
+	err := tr.Record("model", 100, 0.01)
+	if err == nil {
+		t.Error("Record on nil-db should return error")
+	}
 }
 
 func TestClose_Idempotent(t *testing.T) {
@@ -99,11 +107,22 @@ func TestRecord_Multiple_Accumulates(t *testing.T) {
 	tr := newTestTracker(t)
 
 	for i := 0; i < 10; i++ {
-		tr.Record("llama3:8b", 100, 0.001)
+		if err := tr.Record("llama3:8b", 100, 0.001); err != nil {
+			t.Fatalf("Record %d: %v", i, err)
+		}
 	}
 
 	snap := tr.Get()
 	if snap.Total < 0.0099 || snap.Total > 0.0101 {
 		t.Errorf("Total = %f after 10 records of 0.001, want ~0.01", snap.Total)
+	}
+}
+
+func TestRecord_ReturnsErrorAfterClose(t *testing.T) {
+	tr := newTestTracker(t)
+	tr.Close()
+	err := tr.Record("model", 100, 0.01)
+	if err == nil {
+		t.Error("Record after Close should return error")
 	}
 }

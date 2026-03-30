@@ -2,7 +2,7 @@ name: Build & Deploy
 
 on:
   push:
-    branches: [main]
+    branches: [main, dev]
     tags: ['v*']
   pull_request:
     branches: [main]
@@ -12,9 +12,8 @@ env:
   LDFLAGS_PKG: "github.com/fabgoodvibes/owlrun/internal/buildinfo"
 
 jobs:
-  # ── Build all client binaries (beta + production) ──────────────────────────
   build:
-    name: Build
+    name: Build (${{ matrix.network }})
     runs-on: ubuntu-latest
 
     strategy:
@@ -26,7 +25,7 @@ jobs:
 
       - uses: actions/setup-go@v5
         with:
-          go-version: '1.24'
+          go-version: '1.25'
           cache: true
 
       - name: Vet
@@ -52,7 +51,7 @@ jobs:
           mkdir -p dist
           GOOS=windows GOARCH=amd64 CGO_ENABLED=0 \
             go build -ldflags='${{ steps.flags.outputs.ldflags }}' \
-            -o dist/owlrun.exe ./cmd/owlrun
+            -o dist/owlrun-windows-amd64.exe ./cmd/owlrun
 
       - name: Build — Linux amd64
         run: |
@@ -81,46 +80,39 @@ jobs:
       - name: Generate checksums
         run: |
           cd dist
-          sha256sum owlrun.exe owlrun-linux-amd64 owlrun-linux-arm64 \
+          sha256sum owlrun-windows-amd64.exe owlrun-linux-amd64 owlrun-linux-arm64 \
             owlrun-darwin-amd64 owlrun-darwin-arm64 > checksums.txt
           cat checksums.txt
 
-      - name: Upload artifacts
-        uses: actions/upload-artifact@v4
-        with:
-          name: owlrun-${{ matrix.network }}
-          path: dist/
-          retention-days: 7
-
-  # ── Deploy beta binaries to get.owlrun.me via Cloudflare Pages (tags only) ─
-  deploy-beta:
-    name: Deploy beta to get.owlrun.me
-    needs: build
-    runs-on: ubuntu-latest
-    if: startsWith(github.ref, 'refs/tags/v')
-
-    steps:
-      - name: Download beta artifacts
-        uses: actions/download-artifact@v4
-        with:
-          name: owlrun-beta
-          path: dist/
-
-      - name: Prepare Pages directory
-        run: |
-          TAG="${{ github.ref_name }}"
-          mkdir -p pages/download/beta/${TAG}
-          mkdir -p pages/download/beta/latest
-
-          # Copy binaries to versioned dir
-          cp dist/* pages/download/beta/${TAG}/
-
-          # Copy binaries to /latest as well
-          cp dist/* pages/download/beta/latest/
-
-      - name: Deploy to Cloudflare Pages
+      # Deploy dev channel (beta network, dev branch only)
+      - name: Deploy dev to CDN
+        if: matrix.network == 'beta' && github.ref == 'refs/heads/dev'
         uses: cloudflare/wrangler-action@v3
         with:
           apiToken: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           accountId: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
-          command: pages deploy pages --project-name=owlrun-cdn
+          command: |
+            pages deploy pages --project-name=owlrun-cdn --branch=dev
+          preCommands: |
+            mkdir -p pages/download/beta/dev
+            cp dist/* pages/download/beta/dev/
+            cp installer/install.sh pages/install.sh
+            cp installer/install.ps1 pages/install.ps1
+
+      # Deploy main channel (beta network, tags only)
+      - name: Deploy beta to CDN
+        if: matrix.network == 'beta' && startsWith(github.ref, 'refs/tags/v')
+        uses: cloudflare/wrangler-action@v3
+        with:
+          apiToken: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          accountId: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          command: |
+            pages deploy pages --project-name=owlrun-cdn --branch=main
+          preCommands: |
+            TAG="${{ github.ref_name }}"
+            mkdir -p pages/download/beta/${TAG}
+            mkdir -p pages/download/beta/latest
+            cp dist/* pages/download/beta/${TAG}/
+            cp dist/* pages/download/beta/latest/
+            cp installer/install.sh pages/install.sh
+            cp installer/install.ps1 pages/install.ps1

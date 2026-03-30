@@ -17,8 +17,10 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"log"
 	"net/http"
 	"os/exec"
+	"strings"
 	"sync"
 	"time"
 
@@ -43,14 +45,49 @@ type PullProgress struct {
 
 // Manager controls the Ollama subprocess.
 type Manager struct {
-	mu      sync.Mutex
-	gpuInfo gpu.Info
-	cmd     *exec.Cmd // nil if not running
+	mu            sync.Mutex
+	gpuInfo       gpu.Info
+	cmd           *exec.Cmd // nil if not running
+	contextLength int       // num_ctx for Ollama; 0 = Ollama default
+	host          string    // Ollama API base URL; empty = ollamaHost default
+
+	warmMu     sync.Mutex
+	warmModel  string            // model to keep warm
+	warmCancel context.CancelFunc // stops the keepalive goroutine
 }
 
 // New creates an inference Manager for the given GPU.
 func New(info gpu.Info) *Manager {
 	return &Manager{gpuInfo: info}
+}
+
+// SetHost overrides the Ollama API base URL (e.g. "http://127.0.0.1:12345").
+func (m *Manager) SetHost(host string) {
+	m.mu.Lock()
+	m.host = host
+	m.mu.Unlock()
+}
+
+// ollamaAddr returns the Ollama API base URL.
+func (m *Manager) ollamaAddr() string {
+	if m.host != "" {
+		return m.host
+	}
+	return ollamaHost
+}
+
+// SetContextLength sets the num_ctx parameter for model loading and inference.
+func (m *Manager) SetContextLength(n int) {
+	m.mu.Lock()
+	m.contextLength = n
+	m.mu.Unlock()
+}
+
+// ContextLength returns the current num_ctx setting.
+func (m *Manager) ContextLength() int {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return m.contextLength
 }
 
 // EnsureInstalled verifies ollama is available; downloads it if not.
@@ -60,14 +97,30 @@ func (m *Manager) EnsureInstalled() error {
 }
 
 // Start launches "ollama serve" and blocks until the API is healthy or the
-// timeout elapses. Returns an error if it fails to start.
+// timeout elapses. If Ollama is already running (e.g. as a Windows service
+// or user-started instance), skips launching and reuses the existing process.
 func (m *Manager) Start() error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
 	if m.cmd != nil {
-		return nil // already running
+		log.Printf("owlrun: ollama cmd already set — reusing our subprocess")
+		return nil // we started it ourselves
 	}
+
+	// Check if Ollama is already running (service, manual start, etc).
+	// Retry a few times since a system service may still be starting.
+	for i := 0; i < 3; i++ {
+		if m.healthyUnlocked() {
+			log.Printf("owlrun: ollama already running on %s — reusing", m.ollamaAddr())
+			return nil
+		}
+		if i < 2 {
+			time.Sleep(2 * time.Second)
+		}
+	}
+
+	log.Printf("owlrun: ollama not detected, attempting to start")
 
 	ollamaPath, err := findOllama()
 	if err != nil {
@@ -77,6 +130,12 @@ func (m *Manager) Start() error {
 	cmd := exec.Command(ollamaPath, "serve")
 	cmd.Env = ollamaEnv(m.gpuInfo) // platform-specific GPU env vars
 	if err := cmd.Start(); err != nil {
+		// Start failed — but Ollama might have become healthy in the
+		// meantime (race with a service starting up). Check once more.
+		if m.healthyUnlocked() {
+			log.Printf("owlrun: ollama already running on %s — reusing", m.ollamaAddr())
+			return nil
+		}
 		return fmt.Errorf("start ollama serve: %w", err)
 	}
 	m.cmd = cmd
@@ -121,7 +180,7 @@ func (m *Manager) IsRunning() bool {
 func (m *Manager) healthyUnlocked() bool {
 	ctx, cancel := context.WithTimeout(context.Background(), healthTimeout)
 	defer cancel()
-	req, _ := http.NewRequestWithContext(ctx, http.MethodGet, ollamaHost+"/api/tags", nil)
+	req, _ := http.NewRequestWithContext(ctx, http.MethodGet, m.ollamaAddr()+"/api/tags", nil)
 	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
 		return false
@@ -135,24 +194,33 @@ func (m *Manager) healthyUnlocked() bool {
 func (m *Manager) ListInstalled() []string {
 	ctx, cancel := context.WithTimeout(context.Background(), healthTimeout)
 	defer cancel()
-	req, _ := http.NewRequestWithContext(ctx, http.MethodGet, ollamaHost+"/api/tags", nil)
+	req, _ := http.NewRequestWithContext(ctx, http.MethodGet, m.ollamaAddr()+"/api/tags", nil)
 	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
+		log.Printf("owlrun: list models failed: %v", err)
 		return nil
 	}
 	defer resp.Body.Close()
 
 	var payload struct {
 		Models []struct {
-			Name string `json:"name"`
+			Name  string `json:"name"`
+			Model string `json:"model"`
 		} `json:"models"`
 	}
 	if err := json.NewDecoder(resp.Body).Decode(&payload); err != nil {
+		log.Printf("owlrun: list models decode failed: %v", err)
 		return nil
 	}
 	out := make([]string, 0, len(payload.Models))
 	for _, m := range payload.Models {
-		out = append(out, m.Name)
+		name := m.Name
+		if name == "" {
+			name = m.Model // fallback for newer Ollama versions
+		}
+		if name != "" {
+			out = append(out, name)
+		}
 	}
 	return out
 }
@@ -166,23 +234,112 @@ func (m *Manager) SelectModel(vramGB float64, maxVRAMPct int) (string, []string)
 	installed := m.ListInstalled()
 
 	installedSet := make(map[string]bool, len(installed))
+	normalizedToActual := make(map[string]string, len(installed))
 	for _, name := range installed {
 		installedSet[name] = true
+		normalizedToActual[normalizeModelName(name)] = name
 	}
 
 	for _, candidate := range ranked {
 		if installedSet[candidate] {
 			return candidate, nil
 		}
+		if actual, ok := normalizedToActual[normalizeModelName(candidate)]; ok {
+			return actual, nil
+		}
+	}
+
+	// CPU fallback
+	if vramGB == 0 && len(installed) > 0 {
+		return installed[0], nil
 	}
 	return "", ranked
+}
+
+// SelectModels returns ALL installed models that fit in VRAM, best first.
+// The first element is the primary model (loaded into VRAM). Others are
+// registered with the gateway so it can route multiple model requests.
+// Returns (models, nil) if at least one found, or (nil, suggestions).
+func (m *Manager) SelectModels(vramGB float64, maxVRAMPct int) ([]string, []string) {
+	ranked := gpu.RankedModels(vramGB, maxVRAMPct)
+	installed := m.ListInstalled()
+
+	if len(installed) == 0 {
+		log.Printf("owlrun: no models returned from ollama /api/tags")
+		return nil, ranked
+	}
+	log.Printf("owlrun: installed models: %v", installed)
+
+	// Build lookup sets — exact match + normalized (strip :latest).
+	installedSet := make(map[string]bool, len(installed))
+	normalizedToActual := make(map[string]string, len(installed))
+	for _, name := range installed {
+		installedSet[name] = true
+		normalizedToActual[normalizeModelName(name)] = name
+	}
+
+	var matched []string
+	seen := make(map[string]bool)
+	for _, candidate := range ranked {
+		actual := ""
+		if installedSet[candidate] {
+			actual = candidate
+		} else if a, ok := normalizedToActual[normalizeModelName(candidate)]; ok {
+			actual = a
+		}
+		if actual != "" && !seen[actual] {
+			matched = append(matched, actual)
+			seen[actual] = true
+		}
+	}
+
+	// CPU fallback: when vramGB==0 (no GPU), any installed model can run.
+	// Use installed models not already matched, preserving ranked order first.
+	if len(matched) == 0 && vramGB == 0 && len(installed) > 0 {
+		log.Printf("owlrun: no table matches — CPU fallback, using all installed models")
+		matched = installed
+	}
+
+	if len(matched) == 0 {
+		return nil, ranked
+	}
+	return matched, nil
+}
+
+// normalizeModelName strips the :latest tag and lowercases for fuzzy matching.
+func normalizeModelName(name string) string {
+	name = strings.ToLower(strings.TrimSpace(name))
+	name = strings.TrimSuffix(name, ":latest")
+	return name
+}
+
+// DeleteModel removes a model from Ollama via DELETE /api/delete.
+func (m *Manager) DeleteModel(modelTag string) error {
+	body, _ := json.Marshal(map[string]string{"name": modelTag})
+	ctx, cancel := context.WithTimeout(context.Background(), healthTimeout)
+	defer cancel()
+	req, err := http.NewRequestWithContext(ctx, http.MethodDelete, m.ollamaAddr()+"/api/delete", bytes.NewReader(body))
+	if err != nil {
+		return err
+	}
+	req.Header.Set("Content-Type", "application/json")
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		return fmt.Errorf("delete model: %w", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		b, _ := io.ReadAll(resp.Body)
+		return fmt.Errorf("delete model: HTTP %d: %s", resp.StatusCode, b)
+	}
+	return nil
 }
 
 // ModelInstalled reports whether the given tag already exists locally.
 func (m *Manager) ModelInstalled(modelTag string) bool {
 	ctx, cancel := context.WithTimeout(context.Background(), healthTimeout)
 	defer cancel()
-	req, _ := http.NewRequestWithContext(ctx, http.MethodGet, ollamaHost+"/api/tags", nil)
+	req, _ := http.NewRequestWithContext(ctx, http.MethodGet, m.ollamaAddr()+"/api/tags", nil)
 	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
 		return false
@@ -197,8 +354,8 @@ func (m *Manager) ModelInstalled(modelTag string) bool {
 	if err := json.NewDecoder(resp.Body).Decode(&payload); err != nil {
 		return false
 	}
-	for _, m := range payload.Models {
-		if m.Name == modelTag {
+	for _, mod := range payload.Models {
+		if mod.Name == modelTag {
 			return true
 		}
 	}
@@ -228,7 +385,7 @@ func (m *Manager) pullModel(modelTag string, ch chan<- PullProgress) error {
 	defer cancel()
 
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost,
-		ollamaHost+"/api/pull", bytes.NewReader(body))
+		m.ollamaAddr()+"/api/pull", bytes.NewReader(body))
 	if err != nil {
 		return err
 	}
@@ -270,16 +427,20 @@ func (m *Manager) pullModel(modelTag string, ch chan<- PullProgress) error {
 // LoadModel sends a no-op generate request to load the model into VRAM.
 // This ensures the first real inference request is fast.
 func (m *Manager) LoadModel(modelTag string) error {
-	body, _ := json.Marshal(map[string]any{
+	payload := map[string]any{
 		"model":  modelTag,
 		"prompt": "",
 		"stream": false,
-	})
+	}
+	if ctxLen := m.ContextLength(); ctxLen > 0 {
+		payload["options"] = map[string]any{"num_ctx": ctxLen}
+	}
+	body, _ := json.Marshal(payload)
 	ctx, cancel := context.WithTimeout(context.Background(), loadTimeout)
 	defer cancel()
 
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost,
-		ollamaHost+"/api/generate", bytes.NewReader(body))
+		m.ollamaAddr()+"/api/generate", bytes.NewReader(body))
 	if err != nil {
 		return err
 	}
@@ -294,4 +455,57 @@ func (m *Manager) LoadModel(modelTag string) error {
 		return fmt.Errorf("load model: HTTP %d", resp.StatusCode)
 	}
 	return nil
+}
+
+// StartKeepWarm begins a background goroutine that pings Ollama every 4 minutes
+// with an empty prompt to prevent the model from being evicted from VRAM
+// (Ollama's default keep_alive is 5 minutes).
+func (m *Manager) StartKeepWarm(model string) {
+	m.warmMu.Lock()
+	defer m.warmMu.Unlock()
+
+	// Stop any existing keepalive first.
+	if m.warmCancel != nil {
+		m.warmCancel()
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	m.warmModel = model
+	m.warmCancel = cancel
+
+	go func() {
+		ticker := time.NewTicker(4 * time.Minute)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case <-ticker.C:
+				if err := m.LoadModel(model); err != nil {
+					log.Printf("owlrun: keep-warm ping failed: %v", err)
+				}
+			}
+		}
+	}()
+	log.Printf("owlrun: keep-warm enabled for %s (ping every 4m)", model)
+}
+
+// StopKeepWarm stops the background keepalive goroutine.
+func (m *Manager) StopKeepWarm() {
+	m.warmMu.Lock()
+	defer m.warmMu.Unlock()
+
+	if m.warmCancel != nil {
+		m.warmCancel()
+		m.warmCancel = nil
+		log.Printf("owlrun: keep-warm disabled for %s", m.warmModel)
+		m.warmModel = ""
+	}
+}
+
+// IsKeepWarmRunning returns true if the keep-warm goroutine is active.
+func (m *Manager) IsKeepWarmRunning() bool {
+	m.warmMu.Lock()
+	defer m.warmMu.Unlock()
+	return m.warmCancel != nil
 }

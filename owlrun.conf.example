@@ -1,21 +1,20 @@
 # Owlrun configuration — copy to ~/.owlrun/owlrun.conf and fill in your details.
 # This is an MIT-licensed project — you are free to change any value.
 #
-# Architecture: this node connects to the Owlrun Gateway (your private
-# infrastructure). The gateway routes jobs to buyers (BlockRun, io.net,
-# Akash, direct customers) and takes a routing margin. You never connect
-# to buyers directly from this node.
+# Architecture: this node connects to the Owlrun Gateway. The gateway
+# routes inference jobs and takes a single-digit routing margin.
 
 [account]
 api_key       =                     # Set during install wizard
 wallet        =                     # Optional: crypto payout address
-referral_code =                     # Optional: affiliate referral code (owlr_ref_...)
+referral_code     =                     # Optional: affiliate referral code (owlr_ref_...)
+lightning_address =                     # Optional: Lightning address for BTC payouts (e.g. user@walletofsatoshi.com)
 
 [marketplace]
 # The Owlrun Gateway is the default and only connection point for this node.
 # The gateway handles all buyer routing and failover internally.
 # MIT spirit: you can point this at any OpenAI-compatible gateway.
-gateway          = https://gateway.owlrun.me
+gateway          = https://node.owlrun.me
 allow_override   = true
 # region         = auto           # Self-reported region (e.g. us-east, eu-west). Leave empty or "auto" for gateway to detect from IP.
 
