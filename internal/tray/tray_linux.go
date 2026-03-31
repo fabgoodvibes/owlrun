@@ -920,6 +920,7 @@ func (d *sniDaemon) statusSnapshot() dashboard.Status {
 	s.LightningAddress = d.cfg.Account.LightningAddress
 	s.RedeemThreshold = d.cfg.Account.RedeemThreshold
 	s.ContextLength = d.cfg.Inference.ContextLength
+	s.KeepWarm = d.cfg.Inference.KeepWarm
 	s.FreeTierPct = d.cfg.Account.FreeTierPct
 	s.KarmaScore = gwStats.KarmaScore
 	s.KarmaTier = gwStats.KarmaTier

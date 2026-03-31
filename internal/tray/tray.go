@@ -834,6 +834,7 @@ func (a *Agent) statusSnapshot() dashboard.Status {
 	s.LightningAddress = a.cfg.Account.LightningAddress
 	s.RedeemThreshold = a.cfg.Account.RedeemThreshold
 	s.ContextLength = a.cfg.Inference.ContextLength
+	s.KeepWarm = a.cfg.Inference.KeepWarm
 	s.FreeTierPct = a.cfg.Account.FreeTierPct
 	s.KarmaScore = gwStats.KarmaScore
 	s.KarmaTier = gwStats.KarmaTier
