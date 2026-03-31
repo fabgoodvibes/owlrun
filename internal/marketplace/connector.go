@@ -413,16 +413,38 @@ func (c *Connector) register(ctx context.Context) error {
 	return nil
 }
 
+// pricingRefreshLoop waits for the node to register, fetches pricing, then
+// re-fetches every 5 minutes. Only logs when pricing changes or is first seen.
+func (c *Connector) pricingRefreshLoop(ctx context.Context) {
+	// Short delay lets the gateway finish activating the node.
+	select {
+	case <-ctx.Done():
+		return
+	case <-time.After(2 * time.Second):
+	}
+	c.fetchModelPricing(ctx)
+
+	ticker := time.NewTicker(5 * time.Minute)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			c.fetchModelPricing(ctx)
+		}
+	}
+}
+
 // fetchModelPricing queries the gateway's public /v1/models endpoint to get
-// pricing for the currently loaded model. Non-critical — failures are logged
-// and silently ignored.
+// pricing for the currently loaded models. Non-critical — failures are silently ignored.
 func (c *Connector) fetchModelPricing(ctx context.Context) {
 	c.mu.RLock()
-	// Grab all registered model tags for pricing lookup.
 	var modelTags []string
 	for tag := range c.models {
 		modelTags = append(modelTags, tag)
 	}
+	oldPricing := c.allModelPricing
 	c.mu.RUnlock()
 	if len(modelTags) == 0 {
 		return
@@ -435,7 +457,6 @@ func (c *Connector) fetchModelPricing(ctx context.Context) {
 	}
 	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
-		log.Printf("owlrun: gateway: fetch model pricing: %v", err)
 		return
 	}
 	defer resp.Body.Close()
@@ -453,7 +474,6 @@ func (c *Connector) fetchModelPricing(ctx context.Context) {
 		return
 	}
 
-	// Collect pricing for all registered models.
 	registered := make(map[string]bool, len(modelTags))
 	for _, t := range modelTags {
 		registered[t] = true
@@ -467,7 +487,12 @@ func (c *Connector) fetchModelPricing(ctx context.Context) {
 			if primary == nil {
 				primary = &p
 			}
-			log.Printf("owlrun: gateway: model %s pricing: $%.3f/$%.3f per M tokens (in/out)", m.ID, m.Pricing.PerMInputUSD, m.Pricing.PerMOutputUSD)
+			// Only log when pricing is first seen or changes.
+			old := oldPricing[m.ID]
+			if old == nil || old.PerMInputUSD != p.PerMInputUSD || old.PerMOutputUSD != p.PerMOutputUSD {
+				log.Printf("owlrun: gateway: model %s pricing: $%.3f/$%.3f per M tokens (in/out)",
+					m.ID, p.PerMInputUSD, p.PerMOutputUSD)
+			}
 		}
 	}
 	if len(allPricing) > 0 {
@@ -504,7 +529,9 @@ func (c *Connector) runSession(ctx context.Context) error {
 	log.Printf("owlrun: gateway: WS connected")
 
 	// Best-effort fetch of model pricing after WS connects.
-	go c.fetchModelPricing(ctx)
+	// Short delay lets the gateway finish activating the node before we query /v1/models.
+	// Re-fetches every 5 minutes so pricing stays fresh across the session.
+	go c.pricingRefreshLoop(ctx)
 
 	if c.onConnect != nil {
 		c.onConnect()
