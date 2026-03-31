@@ -370,6 +370,43 @@ func buildDaemon(cfg config.Config, dash *dashboard.Server, mockMode bool) *sniD
 			}()
 			return out
 		})
+		dash.SetModelModeSetter(func(mode string) error {
+			if mode != "auto" && mode != "manual" {
+				return fmt.Errorf("invalid model mode: %s", mode)
+			}
+			if err := config.SaveModelMode(mode); err != nil {
+				return err
+			}
+			d.mu.Lock()
+			d.cfg.Inference.ModelMode = mode
+			d.mu.Unlock()
+			log.Printf("owlrun: model mode changed to %s", mode)
+			return nil
+		})
+		dash.SetCategorySetter(func(cat string) error {
+			if err := config.SaveCategory(cat); err != nil {
+				return err
+			}
+			d.mu.Lock()
+			d.cfg.Inference.Category = cat
+			d.mu.Unlock()
+			log.Printf("owlrun: model category changed to %s", cat)
+			if d.cfg.Inference.ModelMode == "auto" {
+				models := d.selectAutoModels(gpu.Category(cat))
+				if len(models) > 0 {
+					primary := models[0]
+					if err := d.ollamaMgr.LoadModel(primary); err != nil {
+						log.Printf("owlrun: load model for new category: %v", err)
+					}
+					d.mu.Lock()
+					d.model = primary
+					d.mu.Unlock()
+					d.gateway.SetModels(models)
+					go d.gateway.Reconnect()
+				}
+			}
+			return nil
+		})
 	}
 
 	return d
@@ -779,9 +816,29 @@ func (d *sniDaemon) startEarning() {
 
 	// Phase 2: select models — all installed that fit, best first.
 	var models []string
-	if d.cfg.Inference.Model != "" {
+	if d.cfg.Inference.ModelMode == "manual" && d.cfg.Inference.Model != "" {
 		models = []string{d.cfg.Inference.Model}
-		log.Printf("owlrun: starting — model %s", d.cfg.Inference.Model)
+		log.Printf("owlrun: manual mode — model %s", d.cfg.Inference.Model)
+	} else if d.cfg.Inference.ModelMode != "manual" {
+		cat := gpu.Category(d.cfg.Inference.Category)
+		models = d.selectAutoModels(cat)
+		if len(models) == 0 {
+			rec := gpu.RecommendByCategory(d.gpuInfo.VRAMTotalGB, d.cfg.Inference.MaxVRAMPct, cat)
+			log.Printf("owlrun: auto mode — no matching models installed, pulling %s", rec)
+			if err := d.loadOrPull(rec); err != nil {
+				log.Printf("owlrun: auto-pull %s failed: %v", rec, err)
+				_ = d.ollamaMgr.Stop()
+				d.mu.Lock()
+				d.starting = false
+				d.st = linuxError
+				d.errorDetail = fmt.Sprintf("Failed to download model %s. Check disk space and try again.", rec)
+				d.applyStateLocked()
+				d.mu.Unlock()
+				return
+			}
+			models = []string{rec}
+		}
+		log.Printf("owlrun: auto mode (category=%s) — %d models, primary: %s", cat, len(models), models[0])
 	} else {
 		var suggestions []string
 		models, suggestions = d.ollamaMgr.SelectModels(d.gpuInfo.VRAMTotalGB, d.cfg.Inference.MaxVRAMPct)
@@ -799,7 +856,7 @@ func (d *sniDaemon) startEarning() {
 			d.mu.Unlock()
 			return
 		}
-		log.Printf("owlrun: found %d installed models, primary: %s", len(models), models[0])
+		log.Printf("owlrun: manual mode — found %d installed models, primary: %s", len(models), models[0])
 	}
 	model := models[0]
 
@@ -820,6 +877,22 @@ func (d *sniDaemon) startEarning() {
 		d.ollamaMgr.StartKeepWarm(model)
 	}
 	log.Printf("owlrun: ready — connecting to gateway")
+}
+
+func (d *sniDaemon) selectAutoModels(cat gpu.Category) []string {
+	ranked := gpu.RankedByCategory(d.gpuInfo.VRAMTotalGB, d.cfg.Inference.MaxVRAMPct, cat)
+	installed := d.ollamaMgr.ListInstalled()
+	installedSet := make(map[string]bool, len(installed))
+	for _, m := range installed {
+		installedSet[m] = true
+	}
+	var out []string
+	for _, tag := range ranked {
+		if installedSet[tag] {
+			out = append(out, tag)
+		}
+	}
+	return out
 }
 
 func (d *sniDaemon) loadOrPull(model string) error {
@@ -855,6 +928,8 @@ func (d *sniDaemon) statusSnapshot() dashboard.Status {
 	d.mu.Unlock()
 
 	var s dashboard.Status
+	s.ModelMode = d.cfg.Inference.ModelMode
+	s.ModelCategory = d.cfg.Inference.Category
 	s.JobMode = jobMode
 	s.NodeID = d.nodeID
 	s.ProviderKey = d.cfg.Account.APIKey
@@ -899,7 +974,7 @@ func (d *sniDaemon) statusSnapshot() dashboard.Status {
 	}
 	for _, mi := range gpu.AllModelInfos(d.gpuInfo.VRAMTotalGB, d.cfg.Inference.MaxVRAMPct) {
 		s.AvailableModels = append(s.AvailableModels, dashboard.AvailableModel{
-			Tag: mi.Tag, VramGB: mi.VramGB, Installed: installedSet[mi.Tag], Active: mi.Tag == model, Fits: mi.Fits,
+			Tag: mi.Tag, VramGB: mi.VramGB, Installed: installedSet[mi.Tag], Active: mi.Tag == model, Fits: mi.Fits, Category: string(mi.Category),
 		})
 	}
 

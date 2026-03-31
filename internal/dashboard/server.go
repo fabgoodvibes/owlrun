@@ -29,6 +29,9 @@ type Status struct {
 	State       string `json:"state"`        // "earning" | "idle" | "paused" | "error"
 	ErrorDetail string `json:"error_detail,omitempty"` // user-facing error message when state=error
 
+	ModelMode     string `json:"model_mode"`              // "auto" or "manual"
+	ModelCategory string `json:"model_category,omitempty"` // auto-mode category
+
 	JobMode string `json:"job_mode"` // "never", "idle", "always"
 
 	Wallet struct {
@@ -167,6 +170,12 @@ type SetFreeTierPctFunc func(pct int) error
 // SetKeepWarmFunc toggles the model keep-warm periodic ping.
 type SetKeepWarmFunc func(on bool) error
 
+// SetModelModeFunc is called when the user toggles between auto and manual mode.
+type SetModelModeFunc func(mode string) error
+
+// SetCategoryFunc is called when the user changes the auto-mode category.
+type SetCategoryFunc func(cat string) error
+
 // SwitchModelFunc switches the active primary model. If the model is already
 // installed, it loads it into VRAM and re-registers. Returns error if not installed.
 type SwitchModelFunc func(model string) error
@@ -191,7 +200,8 @@ type AvailableModel struct {
 	VramGB    float64            `json:"vram_gb"`
 	Installed bool               `json:"installed"`
 	Active    bool               `json:"active"`
-	Fits      bool               `json:"fits"`    // fits in VRAM (false = CPU fallback / slow)
+	Fits      bool               `json:"fits"`      // fits in VRAM (false = CPU fallback / slow)
+	Category  string             `json:"category"`   // "general", "code", "reasoning", "small"
 	Pricing   *ModelPricingInfo  `json:"pricing,omitempty"`
 }
 
@@ -211,6 +221,8 @@ type Server struct {
 	setCtxLen      atomic.Pointer[SetContextLengthFunc]
 	setFreeTier    atomic.Pointer[SetFreeTierPctFunc]
 	setKeepWarm    atomic.Pointer[SetKeepWarmFunc]
+	setModelMode   atomic.Pointer[SetModelModeFunc]
+	setCategory    atomic.Pointer[SetCategoryFunc]
 }
 
 // New creates a dashboard Server on the given port.
@@ -282,6 +294,16 @@ func (s *Server) SetKeepWarmSetter(fn SetKeepWarmFunc) {
 	s.setKeepWarm.Store(&fn)
 }
 
+// SetModelModeSetter wires the model mode change function.
+func (s *Server) SetModelModeSetter(fn SetModelModeFunc) {
+	s.setModelMode.Store(&fn)
+}
+
+// SetCategorySetter wires the category change function.
+func (s *Server) SetCategorySetter(fn SetCategoryFunc) {
+	s.setCategory.Store(&fn)
+}
+
 // Start launches the HTTP server in the background.
 // The listener is bound before returning so the port is ready for connections.
 func (s *Server) Start() error {
@@ -300,6 +322,8 @@ func (s *Server) Start() error {
 	mux.HandleFunc("/api/set-context-length", s.handleSetContextLength)
 	mux.HandleFunc("/api/set-free-tier", s.handleSetFreeTier)
 	mux.HandleFunc("/api/set-keep-warm", s.handleSetKeepWarm)
+	mux.HandleFunc("/api/set-model-mode", s.handleSetModelMode)
+	mux.HandleFunc("/api/set-category", s.handleSetCategory)
 	addr := fmt.Sprintf("127.0.0.1:%d", s.port)
 	ln, err := net.Listen("tcp", addr)
 	if err != nil {
@@ -628,6 +652,76 @@ func (s *Server) handleSetKeepWarm(w http.ResponseWriter, r *http.Request) {
 	}
 
 	json.NewEncoder(w).Encode(map[string]any{"status": "ok", "keep_warm": req.On})
+}
+
+func (s *Server) handleSetModelMode(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Content-Type", "application/json")
+	w.Header().Set("Access-Control-Allow-Origin", "*")
+
+	if r.Method != http.MethodPost {
+		w.WriteHeader(http.StatusMethodNotAllowed)
+		json.NewEncoder(w).Encode(map[string]string{"error": "POST required"})
+		return
+	}
+
+	fn := s.setModelMode.Load()
+	if fn == nil {
+		w.WriteHeader(http.StatusServiceUnavailable)
+		json.NewEncoder(w).Encode(map[string]string{"error": "not ready"})
+		return
+	}
+
+	var req struct {
+		Mode string `json:"mode"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		w.WriteHeader(http.StatusBadRequest)
+		json.NewEncoder(w).Encode(map[string]string{"error": "invalid request"})
+		return
+	}
+
+	if err := (*fn)(req.Mode); err != nil {
+		w.WriteHeader(http.StatusInternalServerError)
+		json.NewEncoder(w).Encode(map[string]string{"error": err.Error()})
+		return
+	}
+
+	json.NewEncoder(w).Encode(map[string]any{"status": "ok", "model_mode": req.Mode})
+}
+
+func (s *Server) handleSetCategory(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Content-Type", "application/json")
+	w.Header().Set("Access-Control-Allow-Origin", "*")
+
+	if r.Method != http.MethodPost {
+		w.WriteHeader(http.StatusMethodNotAllowed)
+		json.NewEncoder(w).Encode(map[string]string{"error": "POST required"})
+		return
+	}
+
+	fn := s.setCategory.Load()
+	if fn == nil {
+		w.WriteHeader(http.StatusServiceUnavailable)
+		json.NewEncoder(w).Encode(map[string]string{"error": "not ready"})
+		return
+	}
+
+	var req struct {
+		Category string `json:"category"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		w.WriteHeader(http.StatusBadRequest)
+		json.NewEncoder(w).Encode(map[string]string{"error": "invalid request"})
+		return
+	}
+
+	if err := (*fn)(req.Category); err != nil {
+		w.WriteHeader(http.StatusInternalServerError)
+		json.NewEncoder(w).Encode(map[string]string{"error": err.Error()})
+		return
+	}
+
+	json.NewEncoder(w).Encode(map[string]any{"status": "ok", "category": req.Category})
 }
 
 func (s *Server) handleSwitchModel(w http.ResponseWriter, r *http.Request) {
@@ -1463,24 +1557,30 @@ function update(d) {
   const utilBar = document.getElementById('util-bar');
   utilBar.className = 'bar-fill ' + (g.util_pct > 80 ? 'bar-red' : g.util_pct > 50 ? 'bar-yellow' : 'bar-green');
 
-  // Model picker — interactive
+  // Model picker — interactive with Auto/Manual mode toggle
   var ms = document.getElementById('models-section');
   var avail = d.available_models || [];
   var pulling = d.pulling || false;
+  var modelMode = d.model_mode || 'auto';
+  var modelCategory = d.model_category || '';
+
   if (avail.length === 0) {
     ms.innerHTML = '<div class="stat"><span class="stat-label">Model</span><span class="stat-value">—</span></div>';
   } else {
-    // Split into fits vs slow, sort: fits first (installed first within each group)
-    var fitsModels = avail.filter(function(m) { return m.fits; });
-    var slowModels = avail.filter(function(m) { return !m.fits; });
-    fitsModels.sort(function(a,b) { return (b.installed?1:0) - (a.installed?1:0) || (b.active?1:0) - (a.active?1:0); });
-    slowModels.sort(function(a,b) { return (b.installed?1:0) - (a.installed?1:0); });
-
     var diskInfo = d.disk ? d.disk.free_gb.toFixed(1) + ' GB free' : '';
     var html = '<div style="font-size:11px;color:var(--text-muted);margin-bottom:6px;display:flex;justify-content:space-between"><span>Models</span><span>' + diskInfo + '</span></div>';
+
+    // Mode toggle: Automatic / Manual
+    var autoSel = modelMode !== 'manual';
+    html += '<div style="display:flex;gap:4px;margin-bottom:8px">';
+    html += '<button onclick="setModelMode(\'auto\')" style="flex:1;padding:6px 0;font-size:12px;font-weight:' + (autoSel?'600':'400') + ';border-radius:6px;cursor:pointer;border:1px solid ' + (autoSel?'#4ade80':'var(--border)') + ';background:' + (autoSel?'#1a2a1a':'var(--bg-card)') + ';color:' + (autoSel?'#4ade80':'var(--text-muted)') + '">Automatic</button>';
+    html += '<button onclick="setModelMode(\'manual\')" style="flex:1;padding:6px 0;font-size:12px;font-weight:' + (!autoSel?'600':'400') + ';border-radius:6px;cursor:pointer;border:1px solid ' + (!autoSel?'#f7931a':'var(--border)') + ';background:' + (!autoSel?'#2a1a0a':'var(--bg-card)') + ';color:' + (!autoSel?'#f7931a':'var(--text-muted)') + '">Manual</button>';
+    html += '</div>';
+
     if (pulling) html += '<div id="pull-progress" style="margin-bottom:8px;padding:8px 10px;border:1px solid #f7931a;border-radius:8px;background:var(--wallet-warn-bg);font-size:12px;color:var(--accent)"><span class="spinner"></span> Downloading…</div>';
 
     var registeredModels = d.models || [];
+
     function renderModelCard(m) {
       var pricing = (d.all_model_pricing && d.all_model_pricing[m.tag]) || null;
       var isActive = m.active;
@@ -1494,23 +1594,23 @@ function update(d) {
       h += '<div style="width:8px;height:8px;border-radius:50%;flex-shrink:0;background:' + (isActive ? '#4ade80' : isRegistered ? '#22c55e' : m.installed ? '#555' : '#333') + '"></div>';
       h += '<div style="min-width:0">';
       h += '<div style="font-size:13px;color:#e8e8f0;font-weight:' + (isActive ? '600' : '400') + ';white-space:nowrap;overflow:hidden;text-overflow:ellipsis">' + escapeHtml(m.tag) + '</div>';
-      var meta = m.vram_gb > 0 ? m.vram_gb + ' GB VRAM' : 'CPU';
-      if (pricing) meta += ' &middot; $' + pricing.per_m_output_usd.toFixed(2) + '/M';
+      var catLabels = {general:'General',code:'Code',reasoning:'Reasoning',small:'Fast'};
+      var meta = (catLabels[m.category] || '') + (m.vram_gb > 0 ? ' \u00b7 ' + m.vram_gb + ' GB' : ' \u00b7 CPU');
+      if (pricing) meta += ' \u00b7 $' + pricing.per_m_output_usd.toFixed(2) + '/M';
       h += '<div style="font-size:10px;color:var(--text-muted)">' + meta + '</div>';
       h += '</div></div>';
-      // Action buttons + badges
       if (isActive) {
         h += '<span style="font-size:9px;background:#4ade80;color:#000;padding:2px 6px;border-radius:4px;font-weight:700;flex-shrink:0">ACTIVE</span>';
       } else if (isRegistered && m.installed && !pulling) {
         h += '<div style="display:flex;gap:4px;align-items:center;flex-shrink:0">';
         h += '<span style="font-size:9px;background:#22c55e33;color:#4ade80;padding:2px 6px;border-radius:4px;font-weight:600">AVAILABLE</span>';
         h += '<button onclick="switchModel(\'' + escapeHtml(m.tag) + '\')" style="font-size:10px;background:var(--bg-card-hover);color:var(--text);border:1px solid var(--border-active);border-radius:4px;padding:2px 8px;cursor:pointer">Activate</button>';
-        h += '<button onclick="removeModel(\'' + escapeHtml(m.tag) + '\')" style="font-size:10px;background:var(--bg);color:#ef4444;border:1px solid #ef444444;border-radius:4px;padding:2px 6px;cursor:pointer" title="Remove model">✕</button>';
+        h += '<button onclick="removeModel(\'' + escapeHtml(m.tag) + '\')" style="font-size:10px;background:var(--bg);color:#ef4444;border:1px solid #ef444444;border-radius:4px;padding:2px 6px;cursor:pointer" title="Remove model">\u2715</button>';
         h += '</div>';
       } else if (m.installed && !pulling) {
         h += '<div style="display:flex;gap:4px;flex-shrink:0">';
         h += '<button onclick="switchModel(\'' + escapeHtml(m.tag) + '\')" style="font-size:10px;background:var(--bg-card-hover);color:var(--text);border:1px solid var(--border-active);border-radius:4px;padding:2px 8px;cursor:pointer">Activate</button>';
-        h += '<button onclick="removeModel(\'' + escapeHtml(m.tag) + '\')" style="font-size:10px;background:var(--bg);color:#ef4444;border:1px solid #ef444444;border-radius:4px;padding:2px 6px;cursor:pointer" title="Remove model">✕</button>';
+        h += '<button onclick="removeModel(\'' + escapeHtml(m.tag) + '\')" style="font-size:10px;background:var(--bg);color:#ef4444;border:1px solid #ef444444;border-radius:4px;padding:2px 6px;cursor:pointer" title="Remove model">\u2715</button>';
         h += '</div>';
       } else if (!m.installed && !pulling) {
         h += '<button id="dl-' + escapeHtml(m.tag).replace(/[:.]/g,'_') + '" onclick="pullModel(\'' + escapeHtml(m.tag) + '\',' + m.vram_gb + ')" style="font-size:10px;background:var(--bg);color:var(--accent);border:1px solid rgba(245,158,11,0.27);border-radius:4px;padding:2px 8px;cursor:pointer;flex-shrink:0">Download</button>';
@@ -1521,17 +1621,48 @@ function update(d) {
       return h;
     }
 
-    fitsModels.forEach(function(m) { html += renderModelCard(m); });
+    if (autoSel) {
+      // AUTO MODE — category selector + auto-selected model info
+      var cats = [
+        {id:'', label:'Best Price', desc:'Biggest model your GPU can run'},
+        {id:'general', label:'General', desc:'Chat, Q&A, summarization'},
+        {id:'code', label:'Code', desc:'Code generation & debugging'},
+        {id:'reasoning', label:'Reasoning', desc:'Math, logic, chain-of-thought'},
+        {id:'small', label:'Fast', desc:'Lightweight, high throughput'}
+      ];
+      html += '<div style="display:flex;flex-wrap:wrap;gap:4px;margin-bottom:8px">';
+      cats.forEach(function(c) {
+        var sel = modelCategory === c.id;
+        html += '<button onclick="setCategory(\'' + c.id + '\')" title="' + c.desc + '" style="padding:4px 10px;font-size:11px;border-radius:6px;cursor:pointer;border:1px solid ' + (sel?'#4ade80':'var(--border)') + ';background:' + (sel?'#1a2a1a':'var(--bg-card)') + ';color:' + (sel?'#4ade80':'var(--text-muted)') + ';font-weight:' + (sel?'600':'400') + '">' + c.label + '</button>';
+      });
+      html += '</div>';
 
-    // Slow models — hidden by default, toggle to show
-    if (slowModels.length > 0) {
-      var showSlow = document.getElementById('show-slow-check');
-      var slowChecked = showSlow ? showSlow.checked : false;
-      html += '<label style="display:flex;align-items:center;gap:6px;font-size:11px;color:var(--text-muted);margin:8px 0 4px;cursor:pointer">';
-      html += '<input type="checkbox" id="show-slow-check" onchange="poll()" ' + (slowChecked ? 'checked' : '') + ' style="accent-color:var(--accent)">';
-      html += 'Show ' + slowModels.length + ' larger models (may be slow on this machine)</label>';
-      if (slowChecked) {
-        slowModels.forEach(function(m) { html += renderModelCard(m); });
+      // Show active + registered models (auto-selected)
+      var activeModels = avail.filter(function(m) { return m.active || registeredModels.indexOf(m.tag) >= 0; });
+      if (activeModels.length > 0) {
+        html += '<div style="font-size:10px;color:var(--text-muted);margin-bottom:4px">Auto-selected for your hardware:</div>';
+        activeModels.forEach(function(m) { html += renderModelCard(m); });
+      } else {
+        html += '<div style="font-size:11px;color:var(--text-muted);padding:8px;text-align:center">No models installed yet. Restart to auto-download.</div>';
+      }
+    } else {
+      // MANUAL MODE — full model grid (existing behavior)
+      var fitsModels = avail.filter(function(m) { return m.fits; });
+      var slowModels = avail.filter(function(m) { return !m.fits; });
+      fitsModels.sort(function(a,b) { return (b.installed?1:0) - (a.installed?1:0) || (b.active?1:0) - (a.active?1:0); });
+      slowModels.sort(function(a,b) { return (b.installed?1:0) - (a.installed?1:0); });
+
+      fitsModels.forEach(function(m) { html += renderModelCard(m); });
+
+      if (slowModels.length > 0) {
+        var showSlow = document.getElementById('show-slow-check');
+        var slowChecked = showSlow ? showSlow.checked : false;
+        html += '<label style="display:flex;align-items:center;gap:6px;font-size:11px;color:var(--text-muted);margin:8px 0 4px;cursor:pointer">';
+        html += '<input type="checkbox" id="show-slow-check" onchange="poll()" ' + (slowChecked ? 'checked' : '') + ' style="accent-color:var(--accent)">';
+        html += 'Show ' + slowModels.length + ' larger models (may be slow on this machine)</label>';
+        if (slowChecked) {
+          slowModels.forEach(function(m) { html += renderModelCard(m); });
+        }
       }
     }
 
@@ -1976,6 +2107,24 @@ document.getElementById('period-tabs').addEventListener('click', function(e) {
 
 poll();
 setInterval(poll, 5000);
+
+async function setModelMode(mode) {
+  try {
+    var resp = await fetch('/api/set-model-mode', {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({mode:mode})});
+    var data = await resp.json();
+    if (!resp.ok) { alert('Error: ' + (data.error || 'unknown')); return; }
+    poll();
+  } catch(e) { alert('Failed: ' + e.message); }
+}
+
+async function setCategory(cat) {
+  try {
+    var resp = await fetch('/api/set-category', {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({category:cat})});
+    var data = await resp.json();
+    if (!resp.ok) { alert('Error: ' + (data.error || 'unknown')); return; }
+    poll();
+  } catch(e) { alert('Failed: ' + e.message); }
+}
 
 async function removeModel(tag) {
   if (!confirm('Remove ' + tag + '?\n\nThis will delete the model from disk and free up space.\nYou can re-download it later.')) return;

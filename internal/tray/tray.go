@@ -336,6 +336,44 @@ func (a *Agent) onReady() {
 			}()
 			return out
 		})
+		a.dash.SetModelModeSetter(func(mode string) error {
+			if mode != "auto" && mode != "manual" {
+				return fmt.Errorf("invalid model mode: %s", mode)
+			}
+			if err := config.SaveModelMode(mode); err != nil {
+				return err
+			}
+			a.mu.Lock()
+			a.cfg.Inference.ModelMode = mode
+			a.mu.Unlock()
+			log.Printf("owlrun: model mode changed to %s", mode)
+			return nil
+		})
+		a.dash.SetCategorySetter(func(cat string) error {
+			if err := config.SaveCategory(cat); err != nil {
+				return err
+			}
+			a.mu.Lock()
+			a.cfg.Inference.Category = cat
+			a.mu.Unlock()
+			log.Printf("owlrun: model category changed to %s", cat)
+			// In auto mode, re-select models for the new category
+			if a.cfg.Inference.ModelMode == "auto" {
+				models := a.selectAutoModels(gpu.Category(cat))
+				if len(models) > 0 {
+					primary := models[0]
+					if err := a.ollamaMgr.LoadModel(primary); err != nil {
+						log.Printf("owlrun: load model for new category: %v", err)
+					}
+					a.mu.Lock()
+					a.model = primary
+					a.mu.Unlock()
+					a.gateway.SetModels(models)
+					go a.gateway.Reconnect()
+				}
+			}
+			return nil
+		})
 	}
 
 	go a.gpuMonitor.Start()
@@ -514,10 +552,34 @@ func (a *Agent) startEarning() {
 	}
 
 	var models []string
-	if a.cfg.Inference.Model != "" {
+	if a.cfg.Inference.ModelMode == "manual" && a.cfg.Inference.Model != "" {
+		// Manual mode with pinned model
 		models = []string{a.cfg.Inference.Model}
-		log.Printf("owlrun: starting — model %s", a.cfg.Inference.Model)
+		log.Printf("owlrun: manual mode — model %s", a.cfg.Inference.Model)
+	} else if a.cfg.Inference.ModelMode != "manual" {
+		// Auto mode — pick best model(s) for category + hardware
+		cat := gpu.Category(a.cfg.Inference.Category)
+		models = a.selectAutoModels(cat)
+		if len(models) == 0 {
+			// Nothing installed that matches — recommend + auto-pull
+			rec := gpu.RecommendByCategory(a.gpuInfo.VRAMTotalGB, a.cfg.Inference.MaxVRAMPct, cat)
+			log.Printf("owlrun: auto mode — no matching models installed, pulling %s", rec)
+			if err := a.loadOrPull(rec); err != nil {
+				log.Printf("owlrun: auto-pull %s failed: %v", rec, err)
+				_ = a.ollamaMgr.Stop()
+				a.mu.Lock()
+				a.starting = false
+				a.state = StateError
+				a.errorDetail = fmt.Sprintf("Failed to download model %s. Check disk space and try again.", rec)
+				a.refreshMenuLocked()
+				a.mu.Unlock()
+				return
+			}
+			models = []string{rec}
+		}
+		log.Printf("owlrun: auto mode (category=%s) — %d models, primary: %s", cat, len(models), models[0])
 	} else {
+		// Manual mode, no pinned model — use existing auto-select
 		var suggestions []string
 		models, suggestions = a.ollamaMgr.SelectModels(a.gpuInfo.VRAMTotalGB, a.cfg.Inference.MaxVRAMPct)
 		if len(models) == 0 {
@@ -534,7 +596,7 @@ func (a *Agent) startEarning() {
 			a.mu.Unlock()
 			return
 		}
-		log.Printf("owlrun: found %d installed models, primary: %s", len(models), models[0])
+		log.Printf("owlrun: manual mode — found %d installed models, primary: %s", len(models), models[0])
 	}
 	model := models[0] // primary model — loaded into VRAM
 
@@ -554,6 +616,25 @@ func (a *Agent) startEarning() {
 		a.ollamaMgr.StartKeepWarm(model)
 	}
 	log.Printf("owlrun: ready — connecting to gateway")
+}
+
+// selectAutoModels returns installed models matching the given category, sorted
+// by capability (best first). If cat is empty, returns all installed models
+// ranked by VRAM (best-price optimization: biggest model that fits).
+func (a *Agent) selectAutoModels(cat gpu.Category) []string {
+	ranked := gpu.RankedByCategory(a.gpuInfo.VRAMTotalGB, a.cfg.Inference.MaxVRAMPct, cat)
+	installed := a.ollamaMgr.ListInstalled()
+	installedSet := make(map[string]bool, len(installed))
+	for _, m := range installed {
+		installedSet[m] = true
+	}
+	var out []string
+	for _, tag := range ranked {
+		if installedSet[tag] {
+			out = append(out, tag)
+		}
+	}
+	return out
 }
 
 // loadOrPull pulls the model if not yet present, then warms it into VRAM.
@@ -760,6 +841,8 @@ func (a *Agent) statusSnapshot() dashboard.Status {
 	a.mu.Unlock()
 
 	var s dashboard.Status
+	s.ModelMode = a.cfg.Inference.ModelMode
+	s.ModelCategory = a.cfg.Inference.Category
 	s.JobMode = jobMode
 	s.NodeID = a.nodeID
 	s.ProviderKey = a.cfg.Account.APIKey
@@ -812,6 +895,7 @@ func (a *Agent) statusSnapshot() dashboard.Status {
 			Installed: installedSet[mi.Tag],
 			Active:    mi.Tag == model,
 			Fits:      mi.Fits,
+			Category:  string(mi.Category),
 		})
 	}
 

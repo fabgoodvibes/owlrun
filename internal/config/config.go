@@ -57,10 +57,12 @@ type MarketplaceConfig struct {
 
 type InferenceConfig struct {
 	ModelAuto     bool
-	KeepWarm      bool // periodic ping to prevent Ollama VRAM eviction (default true)
+	KeepWarm      bool   // periodic ping to prevent Ollama VRAM eviction (default true)
 	MaxVRAMPct    int
 	Model         string // override: pin a specific model tag; empty = auto-select
 	ContextLength int    // Ollama num_ctx; 0 = use default (8192)
+	ModelMode     string // "auto" (default) or "manual"
+	Category      string // auto-mode category: "general", "code", "reasoning", "small", "" = best price
 }
 
 type IdleConfig struct {
@@ -100,6 +102,7 @@ func defaults() Config {
 			KeepWarm:      true,
 			MaxVRAMPct:    80,
 			ContextLength: 8192,
+			ModelMode:     "auto",
 		},
 		Idle: IdleConfig{
 			TriggerMinutes: 10,
@@ -226,6 +229,34 @@ func SaveKeepWarm(on bool) error {
 	return f.SaveTo(path)
 }
 
+// SaveModelMode persists the model selection mode ("auto" or "manual") to the config file.
+func SaveModelMode(mode string) error {
+	path := Path()
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		return err
+	}
+	f, err := ini.LooseLoad(path)
+	if err != nil {
+		f = ini.Empty()
+	}
+	f.Section("inference").Key("model_mode").SetValue(mode)
+	return f.SaveTo(path)
+}
+
+// SaveCategory persists the auto-mode category to the config file.
+func SaveCategory(cat string) error {
+	path := Path()
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		return err
+	}
+	f, err := ini.LooseLoad(path)
+	if err != nil {
+		f = ini.Empty()
+	}
+	f.Section("inference").Key("category").SetValue(cat)
+	return f.SaveTo(path)
+}
+
 // SaveContextLength persists the Ollama context length to the config file.
 func SaveContextLength(ctxLen int) error {
 	path := Path()
@@ -296,6 +327,7 @@ func bootstrap(cfg *Config) {
 
 	inf := f.Section("inference")
 	inf.Key("model_auto").SetValue("true")
+	inf.Key("model_mode").SetValue("auto")
 	inf.Key("max_vram_pct").SetValue("80")
 	inf.Key("context_length").SetValue("8192")
 
@@ -361,6 +393,10 @@ func Load() (Config, error) {
 		cfg.Inference.MaxVRAMPct = sec.Key("max_vram_pct").MustInt(80)
 		cfg.Inference.Model = sec.Key("model").String()
 		cfg.Inference.ContextLength = sec.Key("context_length").MustInt(8192)
+		if mm := sec.Key("model_mode").String(); mm == "auto" || mm == "manual" {
+			cfg.Inference.ModelMode = mm
+		}
+		cfg.Inference.Category = sec.Key("category").String()
 	}
 
 	if sec, err := f.GetSection("idle"); err == nil {
