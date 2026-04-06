@@ -947,14 +947,21 @@ const dashboardHTML = `<!DOCTYPE html>
   body { background: var(--bg); color: var(--text); font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; font-size: 17px; padding: 28px 36px; transition: background var(--transition), color var(--transition); }
   h1 { font-size: 26px; font-weight: 600; margin-bottom: 22px; color: var(--text-heading); letter-spacing: -0.3px; display: flex; align-items: center; gap: 12px; }
   h1 span { opacity: 0.6; font-weight: 400; font-size: 16px; }
-  .grid { display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 14px; }
+  .grid { display: grid; grid-template-columns: repeat(4, 1fr); gap: 14px; }
   .card { background: var(--bg-card); border: 1px solid var(--border); border-radius: 12px; padding: 20px; transition: background var(--transition), border-color var(--transition); }
-  .card-title { font-size: 14px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.8px; color: var(--text-dim); margin-bottom: 16px; }
-  .card-wallet { grid-row: 1 / 4; }
+  .card-title { font-size: 14px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.8px; color: var(--text-dim); margin-bottom: 16px; display: flex; justify-content: space-between; align-items: center; }
   .card-wide { grid-column: 1 / -1; }
   .card-notify { margin-bottom: 14px; }
-  @media (max-width: 900px) { .grid { grid-template-columns: 1fr 1fr; } .card-wallet { grid-row: auto; } }
-  @media (max-width: 650px) { .grid { grid-template-columns: 1fr; } .card-wallet { grid-row: auto; } }
+  .card.needs-wallet { display: none; }
+  @media (max-width: 1100px) { .grid { grid-template-columns: 1fr 1fr 1fr; } }
+  @media (max-width: 800px) { .grid { grid-template-columns: 1fr 1fr; } }
+  @media (max-width: 550px) { .grid { grid-template-columns: 1fr; } }
+  /* Drag and drop */
+  .drag-handle { cursor: grab; color: var(--text-muted); font-size: 14px; opacity: 0.4; user-select: none; padding: 0 2px; letter-spacing: -2px; }
+  .drag-handle:hover { opacity: 0.8; }
+  .card[draggable="true"]:active .drag-handle { cursor: grabbing; }
+  .card.dragging { opacity: 0.4; border-style: dashed; }
+  .card.drag-over { border-color: var(--accent); box-shadow: 0 0 0 2px rgba(245,158,11,0.3); }
   .stat { display: flex; justify-content: space-between; align-items: center; margin-bottom: 10px; min-height: 26px; }
   .stat:last-child { margin-bottom: 0; }
   .stat-label { color: var(--text); font-size: 16px; }
@@ -1015,11 +1022,6 @@ const dashboardHTML = `<!DOCTYPE html>
   .payout-link { color: var(--accent); text-decoration: none; font-size: 11px; font-family: monospace; }
   .payout-link:hover { text-decoration: underline; }
   .payout-time { color: var(--text-muted); font-size: 11px; }
-  .cfg-tab { background: var(--bg-card-hover); border: 1px solid var(--border); color: var(--text-muted); padding: 6px 12px; font-size: 12px; font-weight: 600; cursor: pointer; transition: all 0.15s; flex: 1; text-align: center; }
-  .cfg-tab:first-child { border-radius: 6px 0 0 6px; }
-  .cfg-tab:last-child { border-radius: 0 6px 6px 0; }
-  .cfg-tab:not(:first-child) { border-left: none; }
-  .cfg-tab.active { background: var(--accent); color: #fff; border-color: var(--accent); }
 </style>
 </head>
 <body>
@@ -1050,222 +1052,11 @@ const dashboardHTML = `<!DOCTYPE html>
   </div>
 </div>
 
-<div class="grid">
+<div class="grid" id="card-grid">
 
-  <!-- ═══ Wallet (col 1, spans 2 rows) ═══ -->
-  <div class="card card-wallet" id="wallet-card">
-    <div class="card-title" data-i18n="dash.wallet">Wallet</div>
-    <div id="wallet-setup" style="display:none">
-      <div style="text-align:center;padding:8px 0 16px">
-        <div style="font-size:28px;margin-bottom:8px">&#9889;</div>
-        <div style="font-size:16px;color:#d0d0e0;font-weight:600;margin-bottom:12px" data-i18n="dash.wallet_setup_heading">Set up your wallet to get paid</div>
-        <div style="text-align:left;font-size:14px;color:#aaaabb;line-height:1.8">
-          <div style="margin-bottom:8px"><span style="color:#f7931a;font-weight:600">1.</span> Install <a href="https://www.minibits.cash/" target="_blank" style="color:#f7931a;text-decoration:underline">Minibits</a> wallet (by Bitango Technologies)</div>
-          <div style="margin-bottom:8px"><span style="color:#f7931a;font-weight:600">2.</span> Find your Lightning address in Minibits (looks like <code style="background:var(--code-bg);padding:2px 6px;border-radius:4px;font-size:13px;color:#f7931a">you@minibits.cash</code>)</div>
-          <div><span style="color:#f7931a;font-weight:600">3.</span> Paste it below</div>
-        </div>
-      </div>
-      <div style="margin-top:12px">
-        <input id="ln-address-input" type="text" placeholder="yourname@minibits.cash" style="width:100%;padding:12px 14px;background:var(--bg);color:var(--accent);border:1px solid var(--border-active);border-radius:8px;font-size:15px;font-family:monospace;box-sizing:border-box" />
-        <button id="btn-save-ln" onclick="saveLightningAddress()" style="width:100%;margin-top:8px;padding:12px 16px;background:#f7931a;color:#fff;border:none;border-radius:8px;cursor:pointer;font-weight:600;font-size:15px" data-i18n="dash.wallet_save_btn">Save &amp; Start Earning</button>
-        <div id="ln-save-error" style="display:none;color:#ef4444;font-size:13px;margin-top:6px;text-align:center"></div>
-      </div>
-      <div style="margin-top:14px;font-size:13px;color:var(--text-muted);text-align:center" data-i18n="dash.wallet_any_wallet">
-        Works with any Lightning wallet — Minibits, Phoenix, Wallet of Satoshi, etc.
-      </div>
-    </div>
-    <div id="wallet-active" style="display:none">
-      <div class="stat">
-        <span class="stat-label" data-i18n="dash.wallet_ln_address">Lightning address</span>
-        <span class="stat-value" id="ln-address-display" style="color:#f7931a;font-family:monospace;font-size:14px;max-width:200px;text-align:right;word-break:break-all"></span>
-      </div>
-      <div style="margin-top:10px">
-        <button onclick="toggleEditLnAddress()" style="padding:6px 14px;background:var(--bg-card-hover);color:var(--text);border:1px solid var(--border-active);border-radius:6px;cursor:pointer;font-size:13px" data-i18n="dash.wallet_change">Change address</button>
-      </div>
-      <div id="edit-ln-section" style="display:none;margin-top:10px">
-        <input id="ln-address-edit" type="text" style="width:100%;padding:10px 12px;background:var(--bg);color:var(--accent);border:1px solid var(--border-active);border-radius:8px;font-size:14px;font-family:monospace;box-sizing:border-box" />
-        <div style="display:flex;gap:6px;margin-top:6px">
-          <button onclick="saveLightningAddressEdit()" style="flex:1;padding:8px 12px;background:#f7931a;color:#fff;border:none;border-radius:6px;cursor:pointer;font-weight:600;font-size:13px" data-i18n="dash.wallet_save">Save</button>
-          <button onclick="toggleEditLnAddress()" style="padding:8px 12px;background:var(--bg-card-hover);color:var(--text);border:1px solid var(--border-active);border-radius:6px;cursor:pointer;font-size:13px" data-i18n="dash.wallet_cancel">Cancel</button>
-        </div>
-        <div id="ln-edit-error" style="display:none;color:#ef4444;font-size:13px;margin-top:6px"></div>
-      </div>
-
-      <!-- Job mode selector (always visible) -->
-      <div style="margin-top:16px;padding-top:14px;border-top:1px solid var(--border)">
-        <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px">
-          <span style="font-size:14px;color:#d0d0e0" data-i18n="dash.accept_jobs">Accept jobs</span>
-          <span id="job-mode-label" style="font-size:13px;color:var(--text-muted)"></span>
-        </div>
-        <div id="job-mode-btns" style="display:flex;gap:6px">
-          <button onclick="setJobMode('always')" id="jm-always" style="flex:1;padding:8px 0;border-radius:6px;border:1px solid var(--border-active);background:var(--bg-card-hover);color:var(--text);cursor:pointer;font-size:13px;font-weight:600;transition:all .15s" data-i18n="dash.job_always">Always</button>
-          <button onclick="setJobMode('idle')" id="jm-idle" style="flex:1;padding:8px 0;border-radius:6px;border:1px solid var(--border-active);background:var(--bg-card-hover);color:var(--text);cursor:pointer;font-size:13px;font-weight:600;transition:all .15s" data-i18n="dash.job_idle">When idle</button>
-          <button onclick="setJobMode('never')" id="jm-never" style="flex:1;padding:8px 0;border-radius:6px;border:1px solid var(--border-active);background:var(--bg-card-hover);color:var(--text);cursor:pointer;font-size:13px;font-weight:600;transition:all .15s" data-i18n="dash.job_never">Never</button>
-        </div>
-        <div id="job-mode-hint" style="font-size:12px;color:var(--text-muted);margin-top:6px"></div>
-      </div>
-
-      <!-- Settings tabs -->
-      <div style="margin-top:16px;padding-top:14px;border-top:1px solid var(--border)">
-        <div id="cfg-tabs" style="display:flex;gap:0;margin-bottom:14px">
-          <button onclick="showCfgTab('payout')" data-cfg="payout" class="cfg-tab active" data-i18n="dash.payout_threshold">Payout</button>
-          <button onclick="showCfgTab('karma')" data-cfg="karma" class="cfg-tab" data-i18n="dash.karma">Karma</button>
-          <button onclick="showCfgTab('model-cfg')" data-cfg="model-cfg" class="cfg-tab" data-i18n="dash.model">Model</button>
-        </div>
-
-        <!-- Tab: Payout -->
-        <div id="cfg-payout" class="cfg-panel">
-          <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:6px">
-            <span style="font-size:14px;color:#d0d0e0" data-i18n="dash.payout_threshold">Payout threshold</span>
-            <span id="threshold-value" style="font-size:14px;color:#f7931a;font-weight:600">500 sats</span>
-          </div>
-          <input id="threshold-slider" type="range" min="100" max="1000" step="50" value="500" oninput="updateThresholdDisplay(this.value)" onchange="saveRedeemThreshold(this.value)" style="width:100%;accent-color:#f7931a;cursor:pointer" />
-          <div style="display:flex;justify-content:space-between;font-size:12px;color:var(--text-muted);margin-top:2px">
-            <span>100</span><span>500</span><span>1000</span>
-          </div>
-          <div style="font-size:13px;color:#aaaabb;margin-top:6px" id="threshold-hint" data-i18n="dash.payout_threshold_hint">Lower = faster payouts, higher fees. Higher = slower payouts, lower fees.</div>
-          <div style="font-size:13px;margin-top:4px">
-            <span style="color:#aaaabb" data-i18n="dash.payout_fee_label">Est. Lightning fee: </span>
-            <span id="fee-estimate" style="color:#f7931a;font-weight:600">~1%</span>
-          </div>
-          <div style="margin-top:8px">
-            <label style="display:flex;align-items:center;gap:8px;cursor:pointer;font-size:13px;color:var(--text-muted)">
-              <input type="checkbox" id="unlock-50" onchange="toggleLowThreshold(this.checked)" style="accent-color:#f7931a" />
-              <span data-i18n="dash.payout_unlock_50">Unlock 50 sat minimum</span>
-            </label>
-            <div id="low-threshold-warn" style="display:none;font-size:12px;color:#eab308;margin-top:4px;margin-left:24px">&#9888; ~10% eaten by Lightning fees at this level</div>
-          </div>
-        </div>
-
-        <!-- Tab: Karma -->
-        <div id="cfg-karma" class="cfg-panel" style="display:none">
-          <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:10px">
-            <span style="font-size:14px;color:#d0d0e0" data-i18n="dash.karma">Karma</span>
-            <span id="karma-badge" style="font-size:11px;padding:2px 8px;border-radius:4px;font-weight:700;text-transform:uppercase"></span>
-          </div>
-          <div class="stat">
-            <span class="stat-label" data-i18n="dash.karma_score">Karma score</span>
-            <span class="stat-value" id="karma-score">0</span>
-          </div>
-          <div class="stat">
-            <span class="stat-label" data-i18n="dash.free_tier_jobs">Free tier jobs served</span>
-            <span class="stat-value" id="free-tier-jobs">0</span>
-          </div>
-          <div style="margin-top:10px">
-            <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:6px">
-              <span style="font-size:13px;color:var(--text-muted)" data-i18n="dash.donate_free_tier">Donate to free tier</span>
-              <span id="free-tier-value" style="font-size:14px;color:#f7931a;font-weight:600">0%</span>
-            </div>
-            <input id="free-tier-slider" type="range" min="0" max="100" step="5" value="0" oninput="updateFreeTierDisplay(this.value)" onchange="saveFreeTierPct(this.value)" style="width:100%;accent-color:#f7931a;cursor:pointer" />
-            <div style="display:flex;justify-content:space-between;font-size:12px;color:var(--text-muted);margin-top:2px">
-              <span>0%</span><span>50%</span><span>100%</span>
-            </div>
-            <div style="font-size:12px;color:var(--text-muted);margin-top:6px" data-i18n="dash.donate_hint">Share idle cycles with free-tier users. Higher donation = more karma = more paid traffic routed to you.</div>
-          </div>
-        </div>
-
-        <!-- Tab: Model config -->
-        <div id="cfg-model-cfg" class="cfg-panel" style="display:none">
-          <div style="display:flex;justify-content:space-between;align-items:center">
-            <div>
-              <span style="font-size:14px;color:var(--text)" data-i18n="dash.keep_warm">Keep model warm</span>
-              <div style="font-size:12px;color:var(--text-muted);margin-top:2px" data-i18n="dash.keep_warm_hint">Ping every 4 min to prevent VRAM eviction</div>
-            </div>
-            <input type="checkbox" id="keep-warm-toggle" checked onchange="setKeepWarm(this.checked)" style="accent-color:#f7931a;width:18px;height:18px;cursor:pointer" />
-          </div>
-          <div style="margin-top:14px;padding-top:14px;border-top:1px solid var(--border)">
-            <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px">
-              <span style="font-size:14px;color:#d0d0e0" data-i18n="dash.context_length">Context length</span>
-              <span id="ctx-len-label" style="font-size:13px;color:var(--text-muted)">8192</span>
-            </div>
-            <div style="display:flex;gap:6px">
-              <select id="ctx-len-select" onchange="setContextLength(this.value)" style="flex:1;padding:8px 10px;border-radius:6px;border:1px solid var(--border-active);background:var(--bg-card-hover);color:var(--text);font-size:13px;cursor:pointer;appearance:auto">
-                <option value="2048">2K (2048)</option>
-                <option value="4096">4K (4096)</option>
-                <option value="8192" selected>8K (8192)</option>
-                <option value="16384">16K (16384)</option>
-                <option value="32768">32K (32768)</option>
-                <option value="65536">64K (65536)</option>
-                <option value="131072">128K (131072)</option>
-                <option value="262144">256K (262144)</option>
-              </select>
-            </div>
-            <div style="font-size:12px;color:var(--text-muted);margin-top:6px" data-i18n="dash.context_hint">Higher values use more VRAM. Model reloads on change.</div>
-          </div>
-        </div>
-      </div>
-
-      <!-- Earnings stats -->
-      <div style="margin-top:16px;padding-top:14px;border-top:1px solid var(--border)">
-        <div class="stat">
-          <span class="stat-label" data-i18n="dash.pending_earnings">Pending earnings</span>
-          <span class="stat-value" id="sats-gateway" style="color:#f7931a;font-weight:bold">0 sats</span>
-        </div>
-        <div class="stat">
-          <span class="stat-label" data-i18n="dash.usd_approx">USD approx</span>
-          <span class="stat-value" id="sats-usd">$0.00</span>
-        </div>
-        <div class="stat">
-          <span class="stat-label" data-i18n="dash.today_earnings">Today's earnings</span>
-          <span class="stat-value" id="wallet-today-sats" style="color:#22c55e">0 sats</span>
-        </div>
-        <div class="stat">
-          <span class="stat-label" data-i18n="dash.total_withdrawn">Total withdrawn</span>
-          <span class="stat-value" id="wallet-withdrawn">0 sats</span>
-        </div>
-        <div class="stat">
-          <span class="stat-label" data-i18n="dash.next_payout">Next payout est.</span>
-          <span class="stat-value" id="wallet-next-payout" style="font-size:14px;color:#aaaabb">—</span>
-        </div>
-      </div>
-      <!-- Recent payouts -->
-      <div id="payout-history" style="display:none;margin-top:12px;padding-top:12px;border-top:1px solid var(--border)">
-        <div style="font-size:12px;color:var(--text-dim);font-weight:600;text-transform:uppercase;letter-spacing:0.5px;margin-bottom:6px" data-i18n="dash.recent_payouts">Recent Payouts</div>
-        <div id="payout-list"></div>
-      </div>
-
-      <!-- Fee disclaimer -->
-      <div style="margin-top:12px;font-size:12px;color:#888;line-height:1.5;padding:10px 12px;background:var(--bg);border-radius:6px">
-        <span data-i18n="dash.fee_disclaimer">Lightning fees go to the Bitcoin network, not Owlrun. Our fee is always under 10%.</span>
-      </div>
-
-      <!-- Advanced: ecash -->
-      <div style="margin-top:14px">
-        <details>
-          <summary style="cursor:pointer;font-size:14px;color:#aaaabb;user-select:none" data-i18n-prefix="&#9656; " data-i18n="dash.ecash_advanced">&#9656; Advanced: Withdraw as ecash (QR)</summary>
-          <div style="margin-top:12px;padding:12px;background:var(--bg);border-radius:8px">
-            <div class="stat">
-              <span class="stat-label" data-i18n="dash.ecash_local">Local ecash</span>
-              <span class="stat-value" id="ecash-local-sats" style="color:#f7931a">0 sats</span>
-            </div>
-            <div class="stat">
-              <span class="stat-label" data-i18n="dash.ecash_proofs">Proofs</span>
-              <span class="stat-value" id="ecash-proof-count">0</span>
-            </div>
-            <div style="margin-top:8px">
-              <button id="btn-claim" onclick="claimEcash()" style="padding:8px 16px;background:#f7931a;color:#fff;border:none;border-radius:6px;cursor:pointer;font-weight:600;font-size:13px" data-i18n="dash.ecash_claim_all">Claim All</button>
-            </div>
-            <div id="claim-result" style="display:none;margin-top:10px">
-              <textarea id="claim-token" readonly style="width:100%;height:60px;background:var(--bg-card);color:var(--text);border:1px solid var(--border);border-radius:6px;padding:8px;font-size:12px;font-family:monospace;resize:vertical;box-sizing:border-box"></textarea>
-              <div style="display:flex;justify-content:space-between;align-items:center;margin-top:4px">
-                <span id="claim-amount" style="font-size:13px;color:#aaaabb"></span>
-                <button onclick="copyToken()" style="padding:4px 10px;background:var(--bg-card-hover);color:var(--text);border:1px solid var(--border-active);border-radius:4px;cursor:pointer;font-size:12px" data-i18n="dash.ecash_copy">Copy</button>
-              </div>
-            </div>
-            <div id="ecash-token-history" style="margin-top:10px"></div>
-          </div>
-        </details>
-      </div>
-
-      <div style="font-size:13px;color:var(--text-dim);margin-top:10px;padding-top:10px;border-top:1px solid var(--border)" data-i18n="dash.wallet_auto_sent">
-        Earnings auto-sent to your Lightning wallet. No action needed.
-      </div>
-    </div>
-  </div>
-
-  <!-- ═══ Row 1: Status, Earnings ═══ -->
-  <div class="card">
-    <div class="card-title" data-i18n="dash.status">Status</div>
+  <!-- ═══ Status ═══ -->
+  <div class="card" id="card-status" draggable="true">
+    <div class="card-title"><span data-i18n="dash.status">Status</span><span class="drag-handle">&#9776;</span></div>
     <div id="state-badge" class="state-badge">—</div>
     <div class="node-id" id="node-id"></div>
     <div class="node-id" id="provider-key" style="cursor:pointer;user-select:all" title="Click to copy"></div>
@@ -1285,108 +1076,158 @@ const dashboardHTML = `<!DOCTYPE html>
     </div>
   </div>
 
-  <div class="card">
-    <div class="card-title" data-i18n="dash.earnings">Earnings</div>
+  <!-- ═══ Earnings (merged) ═══ -->
+  <div class="card" id="card-earnings" draggable="true">
+    <div class="card-title"><span data-i18n="dash.earnings">Earnings</span><span class="drag-handle">&#9776;</span></div>
     <div class="earnings-big" id="total-sats">0 sats</div>
     <div style="font-size:18px;color:var(--text-dim);font-variant-numeric:tabular-nums;margin-top:2px" id="total-usd">~$0.00</div>
-    <div style="margin-top:14px;padding-top:12px;border-top:1px solid var(--border)">
-      <div class="stat">
-        <span class="stat-label" style="font-size:17px" data-i18n="dash.today">Today</span>
-        <span class="stat-value" id="today-sats" style="color:var(--green);font-size:20px;font-weight:700">0 sats</span>
+    <div style="margin-top:10px;padding-top:10px;border-top:1px solid var(--border)">
+      <div class="stat"><span class="stat-label" data-i18n="dash.today">Today</span><span class="stat-value" id="today-sats" style="color:var(--green);font-weight:700">0 sats</span></div>
+      <div style="text-align:right;margin-top:2px"><span id="today-usd" style="font-size:14px;color:var(--text-muted)">~$0.00</span></div>
+    </div>
+    <div id="wallet-earnings-detail" style="margin-top:10px;padding-top:10px;border-top:1px solid var(--border)">
+      <div class="stat"><span class="stat-label" data-i18n="dash.pending_earnings">Pending</span><span class="stat-value" id="sats-gateway" style="color:#f7931a;font-weight:bold">0 sats</span></div>
+      <div class="stat"><span class="stat-label" data-i18n="dash.usd_approx">USD approx</span><span class="stat-value" id="sats-usd">$0.00</span></div>
+      <div class="stat"><span class="stat-label" data-i18n="dash.total_withdrawn">Withdrawn</span><span class="stat-value" id="wallet-withdrawn">0 sats</span></div>
+      <div class="stat"><span class="stat-label" data-i18n="dash.next_payout">Next payout</span><span class="stat-value" id="wallet-next-payout" style="font-size:13px;color:#aaaabb">—</span></div>
+    </div>
+    <div id="payout-history" style="display:none;margin-top:10px;padding-top:10px;border-top:1px solid var(--border)">
+      <div style="font-size:12px;color:var(--text-dim);font-weight:600;text-transform:uppercase;letter-spacing:0.5px;margin-bottom:6px" data-i18n="dash.recent_payouts">Recent Payouts</div>
+      <div id="payout-list"></div>
+    </div>
+    <div style="margin-top:8px;font-size:11px;color:var(--text-muted);opacity:0.7" data-i18n="dash.usd_disclaimer">USD approximated at live BTC rate</div>
+  </div>
+
+  <!-- ═══ Gateway ═══ -->
+  <div class="card" id="card-gateway" draggable="true">
+    <div class="card-title"><span data-i18n="dash.gw">Gateway</span><span class="drag-handle">&#9776;</span></div>
+    <div class="stat"><span class="stat-label" data-i18n="dash.gw_connection">Connection</span><span class="stat-value" id="gw-connected">—</span></div>
+    <div class="stat"><span class="stat-label" data-i18n="dash.gw_jobs_today">Jobs today</span><span class="stat-value" id="gw-jobs">—</span></div>
+    <div class="stat"><span class="stat-label" data-i18n="dash.gw_tokens_today">Tokens today</span><span class="stat-value" id="gw-tokens">—</span></div>
+    <div class="stat"><span class="stat-label" data-i18n="dash.gw_queue">Queue depth</span><span class="stat-value" id="gw-queue">—</span></div>
+  </div>
+
+  <!-- ═══ Job Mode ═══ -->
+  <div class="card needs-wallet" id="card-job-mode" draggable="true">
+    <div class="card-title"><span data-i18n="dash.accept_jobs">Accept jobs</span><span class="drag-handle">&#9776;</span></div>
+    <div id="job-mode-btns" style="display:flex;gap:6px">
+      <button onclick="setJobMode('always')" id="jm-always" style="flex:1;padding:8px 0;border-radius:6px;border:1px solid var(--border-active);background:var(--bg-card-hover);color:var(--text);cursor:pointer;font-size:13px;font-weight:600;transition:all .15s" data-i18n="dash.job_always">Always</button>
+      <button onclick="setJobMode('idle')" id="jm-idle" style="flex:1;padding:8px 0;border-radius:6px;border:1px solid var(--border-active);background:var(--bg-card-hover);color:var(--text);cursor:pointer;font-size:13px;font-weight:600;transition:all .15s" data-i18n="dash.job_idle">When idle</button>
+      <button onclick="setJobMode('never')" id="jm-never" style="flex:1;padding:8px 0;border-radius:6px;border:1px solid var(--border-active);background:var(--bg-card-hover);color:var(--text);cursor:pointer;font-size:13px;font-weight:600;transition:all .15s" data-i18n="dash.job_never">Never</button>
+    </div>
+    <div id="job-mode-hint" style="font-size:12px;color:var(--text-muted);margin-top:6px"></div>
+  </div>
+
+  <!-- ═══ Wallet ═══ -->
+  <div class="card" id="card-wallet" draggable="true">
+    <div class="card-title"><span data-i18n="dash.wallet">Wallet</span><span class="drag-handle">&#9776;</span></div>
+    <div id="wallet-setup" style="display:none">
+      <div style="text-align:center;padding:6px 0 10px">
+        <div style="font-size:24px;margin-bottom:6px">&#9889;</div>
+        <div style="font-size:15px;color:#d0d0e0;font-weight:600;margin-bottom:10px" data-i18n="dash.wallet_setup_heading">Set up your wallet to get paid</div>
+        <div style="text-align:left;font-size:13px;color:#aaaabb;line-height:1.7">
+          <div style="margin-bottom:4px"><span style="color:#f7931a;font-weight:600">1.</span> Install <a href="https://www.minibits.cash/" target="_blank" style="color:#f7931a;text-decoration:underline">Minibits</a> wallet</div>
+          <div style="margin-bottom:4px"><span style="color:#f7931a;font-weight:600">2.</span> Find your Lightning address</div>
+          <div><span style="color:#f7931a;font-weight:600">3.</span> Paste it below</div>
+        </div>
       </div>
-      <div style="text-align:right;margin-top:2px">
-        <span id="today-usd" style="font-size:14px;color:var(--text-muted)">~$0.00</span>
+      <input id="ln-address-input" type="text" placeholder="yourname@minibits.cash" style="width:100%;padding:10px 12px;background:var(--bg);color:var(--accent);border:1px solid var(--border-active);border-radius:8px;font-size:14px;font-family:monospace;box-sizing:border-box" />
+      <button id="btn-save-ln" onclick="saveLightningAddress()" style="width:100%;margin-top:6px;padding:10px 14px;background:#f7931a;color:#fff;border:none;border-radius:8px;cursor:pointer;font-weight:600;font-size:14px" data-i18n="dash.wallet_save_btn">Save &amp; Start Earning</button>
+      <div id="ln-save-error" style="display:none;color:#ef4444;font-size:13px;margin-top:6px;text-align:center"></div>
+      <div style="margin-top:10px;font-size:12px;color:var(--text-muted);text-align:center" data-i18n="dash.wallet_any_wallet">Works with any Lightning wallet</div>
+    </div>
+    <div id="wallet-active" style="display:none">
+      <div class="stat"><span class="stat-label" data-i18n="dash.wallet_ln_address">Lightning address</span><span class="stat-value" id="ln-address-display" style="color:#f7931a;font-family:monospace;font-size:13px;max-width:180px;text-align:right;word-break:break-all"></span></div>
+      <div style="margin-top:8px"><button onclick="toggleEditLnAddress()" style="padding:5px 12px;background:var(--bg-card-hover);color:var(--text);border:1px solid var(--border-active);border-radius:6px;cursor:pointer;font-size:12px" data-i18n="dash.wallet_change">Change address</button></div>
+      <div id="edit-ln-section" style="display:none;margin-top:8px">
+        <input id="ln-address-edit" type="text" style="width:100%;padding:8px 10px;background:var(--bg);color:var(--accent);border:1px solid var(--border-active);border-radius:8px;font-size:13px;font-family:monospace;box-sizing:border-box" />
+        <div style="display:flex;gap:6px;margin-top:6px">
+          <button onclick="saveLightningAddressEdit()" style="flex:1;padding:6px 10px;background:#f7931a;color:#fff;border:none;border-radius:6px;cursor:pointer;font-weight:600;font-size:12px" data-i18n="dash.wallet_save">Save</button>
+          <button onclick="toggleEditLnAddress()" style="padding:6px 10px;background:var(--bg-card-hover);color:var(--text);border:1px solid var(--border-active);border-radius:6px;cursor:pointer;font-size:12px" data-i18n="dash.wallet_cancel">Cancel</button>
+        </div>
+        <div id="ln-edit-error" style="display:none;color:#ef4444;font-size:12px;margin-top:4px"></div>
       </div>
-    </div>
-    <div style="margin-top:12px;font-size:12px;color:var(--text-muted);opacity:0.7" data-i18n="dash.usd_disclaimer">USD approximated at live BTC rate</div>
-  </div>
-
-  <!-- ═══ Row 2: Gateway, BTC Price ═══ -->
-  <div class="card">
-    <div class="card-title" data-i18n="dash.gw">Gateway</div>
-    <div class="stat">
-      <span class="stat-label" data-i18n="dash.gw_connection">Connection</span>
-      <span class="stat-value" id="gw-connected">—</span>
-    </div>
-    <div class="stat">
-      <span class="stat-label" data-i18n="dash.gw_jobs_today">Jobs today</span>
-      <span class="stat-value" id="gw-jobs">—</span>
-    </div>
-    <div class="stat">
-      <span class="stat-label" data-i18n="dash.gw_tokens_today">Tokens today</span>
-      <span class="stat-value" id="gw-tokens">—</span>
-    </div>
-    <div class="stat">
-      <span class="stat-label" data-i18n="dash.gw_queue">Queue depth</span>
-      <span class="stat-value" id="gw-queue">—</span>
+      <div style="margin-top:10px;font-size:11px;color:var(--text-dim)" data-i18n="dash.wallet_auto_sent">Earnings auto-sent to your Lightning wallet.</div>
+      <div style="margin-top:6px;font-size:11px;color:#888;padding:6px 8px;background:var(--bg);border-radius:6px"><span data-i18n="dash.fee_disclaimer">Lightning fees go to the Bitcoin network, not Owlrun. Our fee is always under 10%.</span></div>
     </div>
   </div>
 
-  <div class="card">
-    <div class="card-title" data-i18n="dash.btc_price">Bitcoin Price</div>
-    <div class="stat">
-      <span class="stat-label" data-i18n="dash.btc_live">Live</span>
-      <span class="stat-value" id="btc-live">—</span>
-    </div>
-    <div class="stat">
-      <span class="stat-label" data-i18n="dash.btc_yesterday">Yesterday's Fix</span>
-      <span class="stat-value" id="btc-owlrun">—</span>
-    </div>
-    <div class="stat">
-      <span class="stat-label" data-i18n="dash.btc_24h">24h Avg</span>
-      <span class="stat-value" id="btc-daily">—</span>
-    </div>
-    <div class="stat">
-      <span class="stat-label" data-i18n="dash.btc_7d">7d Avg</span>
-      <span class="stat-value" id="btc-weekly">—</span>
-    </div>
-    <div class="stat">
-      <span class="stat-label" data-i18n="dash.btc_status">Status</span>
-      <span class="stat-value" id="btc-status">—</span>
-    </div>
+  <!-- ═══ Payout ═══ -->
+  <div class="card needs-wallet" id="card-payout" draggable="true">
+    <div class="card-title"><span data-i18n="dash.payout_threshold">Payout</span><span class="drag-handle">&#9776;</span></div>
+    <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:6px"><span style="font-size:14px;color:var(--text)">Threshold</span><span id="threshold-value" style="font-size:14px;color:#f7931a;font-weight:600">500 sats</span></div>
+    <input id="threshold-slider" type="range" min="100" max="1000" step="50" value="500" oninput="updateThresholdDisplay(this.value)" onchange="saveRedeemThreshold(this.value)" style="width:100%;accent-color:#f7931a;cursor:pointer" />
+    <div style="display:flex;justify-content:space-between;font-size:11px;color:var(--text-muted);margin-top:2px"><span>100</span><span>500</span><span>1000</span></div>
+    <div style="font-size:12px;color:#aaaabb;margin-top:4px" id="threshold-hint" data-i18n="dash.payout_threshold_hint">Lower = faster payouts, higher fees.</div>
+    <div style="font-size:12px;margin-top:4px"><span style="color:#aaaabb" data-i18n="dash.payout_fee_label">Est. fee: </span><span id="fee-estimate" style="color:#f7931a;font-weight:600">~1%</span></div>
+    <div style="margin-top:6px"><label style="display:flex;align-items:center;gap:6px;cursor:pointer;font-size:12px;color:var(--text-muted)"><input type="checkbox" id="unlock-50" onchange="toggleLowThreshold(this.checked)" style="accent-color:#f7931a" /><span data-i18n="dash.payout_unlock_50">Unlock 50 sat minimum</span></label><div id="low-threshold-warn" style="display:none;font-size:11px;color:#eab308;margin-top:4px;margin-left:22px">~10% eaten by fees</div></div>
   </div>
 
-  <div class="card">
-    <div class="card-title" data-i18n="dash.gpu">GPU</div>
+  <!-- ═══ Bitcoin Price ═══ -->
+  <div class="card" id="card-btc" draggable="true">
+    <div class="card-title"><span data-i18n="dash.btc_price">Bitcoin Price</span><span class="drag-handle">&#9776;</span></div>
+    <div class="stat"><span class="stat-label" data-i18n="dash.btc_live">Live</span><span class="stat-value" id="btc-live">—</span></div>
+    <div class="stat"><span class="stat-label" data-i18n="dash.btc_yesterday">Yesterday's Fix</span><span class="stat-value" id="btc-owlrun">—</span></div>
+    <div class="stat"><span class="stat-label" data-i18n="dash.btc_24h">24h Avg</span><span class="stat-value" id="btc-daily">—</span></div>
+    <div class="stat"><span class="stat-label" data-i18n="dash.btc_7d">7d Avg</span><span class="stat-value" id="btc-weekly">—</span></div>
+    <div class="stat"><span class="stat-label" data-i18n="dash.btc_status">Status</span><span class="stat-value" id="btc-status">—</span></div>
+  </div>
+
+  <!-- ═══ Karma ═══ -->
+  <div class="card needs-wallet" id="card-karma" draggable="true">
+    <div class="card-title"><span data-i18n="dash.karma">Karma</span><span class="drag-handle">&#9776;</span></div>
+    <div style="display:flex;justify-content:flex-end;margin-bottom:8px"><span id="karma-badge" style="font-size:11px;padding:2px 8px;border-radius:4px;font-weight:700;text-transform:uppercase"></span></div>
+    <div class="stat"><span class="stat-label" data-i18n="dash.karma_score">Karma score</span><span class="stat-value" id="karma-score">0</span></div>
+    <div class="stat"><span class="stat-label" data-i18n="dash.free_tier_jobs">Free tier jobs</span><span class="stat-value" id="free-tier-jobs">0</span></div>
+    <div style="margin-top:8px"><div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:4px"><span style="font-size:12px;color:var(--text-muted)" data-i18n="dash.donate_free_tier">Donate</span><span id="free-tier-value" style="font-size:13px;color:#f7931a;font-weight:600">0%</span></div>
+    <input id="free-tier-slider" type="range" min="0" max="100" step="5" value="0" oninput="updateFreeTierDisplay(this.value)" onchange="saveFreeTierPct(this.value)" style="width:100%;accent-color:#f7931a;cursor:pointer" />
+    <div style="display:flex;justify-content:space-between;font-size:11px;color:var(--text-muted);margin-top:2px"><span>0%</span><span>50%</span><span>100%</span></div></div>
+  </div>
+
+  <!-- ═══ GPU ═══ -->
+  <div class="card" id="card-gpu" draggable="true">
+    <div class="card-title"><span data-i18n="dash.gpu">GPU</span><span class="drag-handle">&#9776;</span></div>
     <div class="stat"><span class="stat-label" id="gpu-name" style="color:#d0d0e0;font-size:15px"></span></div>
-    <div class="stat">
-      <span class="stat-label" data-i18n="dash.gpu_util">Utilisation</span>
-      <span class="stat-value" style="display:flex;align-items:center;gap:8px">
-        <span id="util-pct">—</span>
-        <div class="bar-wrap"><div class="bar-fill bar-green" id="util-bar" style="width:0%"></div></div>
-      </span>
+    <div class="stat"><span class="stat-label" data-i18n="dash.gpu_util">Utilisation</span><span class="stat-value" style="display:flex;align-items:center;gap:8px"><span id="util-pct">—</span><div class="bar-wrap"><div class="bar-fill bar-green" id="util-bar" style="width:0%"></div></div></span></div>
+    <div class="stat"><span class="stat-label" data-i18n="dash.gpu_vram">VRAM free</span><span class="stat-value" id="vram-free">—</span></div>
+    <div class="stat"><span class="stat-label" data-i18n="dash.gpu_temp">Temperature</span><span class="stat-value" id="temp">—</span></div>
+    <div class="stat"><span class="stat-label" data-i18n="dash.gpu_power">Power draw</span><span class="stat-value" id="power">—</span></div>
+  </div>
+
+  <!-- ═══ Disk ═══ -->
+  <div class="card" id="card-disk" draggable="true">
+    <div class="card-title"><span data-i18n="dash.disk">Disk</span><span class="drag-handle">&#9776;</span></div>
+    <div class="stat"><span class="stat-label" data-i18n="dash.disk_free">Free</span><span class="stat-value" style="display:flex;align-items:center;gap:8px"><span id="disk-free">—</span><div class="bar-wrap"><div class="bar-fill bar-green" id="disk-bar" style="width:0%"></div></div></span></div>
+    <div class="stat"><span class="stat-label" data-i18n="dash.disk_total">Total</span><span class="stat-value" id="disk-total">—</span></div>
+    <div class="stat"><span class="stat-label" data-i18n="dash.disk_path">Path</span><span class="stat-value" style="font-size:13px;color:#aaaabb;max-width:150px;text-align:right;word-break:break-all" id="disk-path">—</span></div>
+  </div>
+
+  <!-- ═══ Model Config ═══ -->
+  <div class="card needs-wallet" id="card-model-cfg" draggable="true">
+    <div class="card-title"><span data-i18n="dash.model">Model</span><span class="drag-handle">&#9776;</span></div>
+    <div style="display:flex;justify-content:space-between;align-items:center">
+      <div><span style="font-size:14px;color:var(--text)" data-i18n="dash.keep_warm">Keep model warm</span><div style="font-size:11px;color:var(--text-muted);margin-top:2px" data-i18n="dash.keep_warm_hint">Ping every 4 min</div></div>
+      <input type="checkbox" id="keep-warm-toggle" checked onchange="setKeepWarm(this.checked)" style="accent-color:#f7931a;width:18px;height:18px;cursor:pointer" />
     </div>
-    <div class="stat">
-      <span class="stat-label" data-i18n="dash.gpu_vram">VRAM free</span>
-      <span class="stat-value" id="vram-free">—</span>
-    </div>
-    <div class="stat">
-      <span class="stat-label" data-i18n="dash.gpu_temp">Temperature</span>
-      <span class="stat-value" id="temp">—</span>
-    </div>
-    <div class="stat">
-      <span class="stat-label" data-i18n="dash.gpu_power">Power draw</span>
-      <span class="stat-value" id="power">—</span>
+    <div style="margin-top:12px;padding-top:12px;border-top:1px solid var(--border)">
+      <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:6px"><span style="font-size:14px;color:var(--text)" data-i18n="dash.context_length">Context length</span><span id="ctx-len-label" style="font-size:13px;color:var(--text-muted)">8192</span></div>
+      <select id="ctx-len-select" onchange="setContextLength(this.value)" style="width:100%;padding:8px 10px;border-radius:6px;border:1px solid var(--border-active);background:var(--bg-card-hover);color:var(--text);font-size:13px;cursor:pointer;appearance:auto">
+        <option value="2048">2K</option><option value="4096">4K</option><option value="8192" selected>8K</option><option value="16384">16K</option><option value="32768">32K</option><option value="65536">64K</option><option value="131072">128K</option><option value="262144">256K</option>
+      </select>
     </div>
   </div>
 
-  <div class="card">
-    <div class="card-title" data-i18n="dash.disk">Disk</div>
-    <div class="stat">
-      <span class="stat-label" data-i18n="dash.disk_free">Free</span>
-      <span class="stat-value" style="display:flex;align-items:center;gap:8px">
-        <span id="disk-free">—</span>
-        <div class="bar-wrap"><div class="bar-fill bar-green" id="disk-bar" style="width:0%"></div></div>
-      </span>
+  <!-- ═══ Ecash ═══ -->
+  <div class="card needs-wallet" id="card-ecash" draggable="true">
+    <div class="card-title"><span>Ecash</span><span class="drag-handle">&#9776;</span></div>
+    <div class="stat"><span class="stat-label" data-i18n="dash.ecash_local">Local ecash</span><span class="stat-value" id="ecash-local-sats" style="color:#f7931a">0 sats</span></div>
+    <div class="stat"><span class="stat-label" data-i18n="dash.ecash_proofs">Proofs</span><span class="stat-value" id="ecash-proof-count">0</span></div>
+    <div style="margin-top:8px"><button id="btn-claim" onclick="claimEcash()" style="padding:6px 14px;background:#f7931a;color:#fff;border:none;border-radius:6px;cursor:pointer;font-weight:600;font-size:12px" data-i18n="dash.ecash_claim_all">Claim All</button></div>
+    <div id="claim-result" style="display:none;margin-top:8px">
+      <textarea id="claim-token" readonly style="width:100%;height:50px;background:var(--bg-card);color:var(--text);border:1px solid var(--border);border-radius:6px;padding:6px;font-size:11px;font-family:monospace;resize:vertical;box-sizing:border-box"></textarea>
+      <div style="display:flex;justify-content:space-between;align-items:center;margin-top:4px"><span id="claim-amount" style="font-size:12px;color:#aaaabb"></span><button onclick="copyToken()" style="padding:3px 8px;background:var(--bg-card-hover);color:var(--text);border:1px solid var(--border-active);border-radius:4px;cursor:pointer;font-size:11px" data-i18n="dash.ecash_copy">Copy</button></div>
     </div>
-    <div class="stat">
-      <span class="stat-label" data-i18n="dash.disk_total">Total</span>
-      <span class="stat-value" id="disk-total">—</span>
-    </div>
-    <div class="stat">
-      <span class="stat-label" data-i18n="dash.disk_path">Path</span>
-      <span class="stat-value" style="font-size:14px;color:#aaaabb;max-width:180px;text-align:right;word-break:break-all" id="disk-path">—</span>
-    </div>
+    <div id="ecash-token-history" style="margin-top:8px"></div>
   </div>
 
 </div>
@@ -1496,14 +1337,59 @@ function toggleNotifications() {
   }
 })();
 
-function showCfgTab(name) {
-  document.querySelectorAll('.cfg-panel').forEach(function(p) { p.style.display = 'none'; });
-  document.querySelectorAll('.cfg-tab').forEach(function(t) { t.classList.remove('active'); });
-  var panel = document.getElementById('cfg-' + name);
-  var tab = document.querySelector('.cfg-tab[data-cfg="' + name + '"]');
-  if (panel) panel.style.display = '';
-  if (tab) tab.classList.add('active');
+// ── Drag and drop ──────────────────────────────────────────────────
+var _dragCard = null;
+document.addEventListener('dragstart', function(e) {
+  var card = e.target.closest('.card[draggable]');
+  if (!card) return;
+  _dragCard = card;
+  card.classList.add('dragging');
+  e.dataTransfer.effectAllowed = 'move';
+});
+document.addEventListener('dragend', function(e) {
+  if (_dragCard) _dragCard.classList.remove('dragging');
+  document.querySelectorAll('.card.drag-over').forEach(function(c) { c.classList.remove('drag-over'); });
+  _dragCard = null;
+});
+document.addEventListener('dragover', function(e) {
+  e.preventDefault();
+  var card = e.target.closest('.card[draggable]');
+  if (!card || card === _dragCard) return;
+  e.dataTransfer.dropEffect = 'move';
+  document.querySelectorAll('.card.drag-over').forEach(function(c) { c.classList.remove('drag-over'); });
+  card.classList.add('drag-over');
+});
+document.addEventListener('drop', function(e) {
+  e.preventDefault();
+  var target = e.target.closest('.card[draggable]');
+  if (!target || !_dragCard || target === _dragCard) return;
+  target.classList.remove('drag-over');
+  var grid = document.getElementById('card-grid');
+  var cards = Array.from(grid.querySelectorAll('.card[draggable]'));
+  var fromIdx = cards.indexOf(_dragCard);
+  var toIdx = cards.indexOf(target);
+  if (fromIdx < toIdx) { target.parentNode.insertBefore(_dragCard, target.nextSibling); }
+  else { target.parentNode.insertBefore(_dragCard, target); }
+  saveCardOrder();
+});
+function saveCardOrder() {
+  var grid = document.getElementById('card-grid');
+  var order = Array.from(grid.querySelectorAll('.card[draggable]')).map(function(c) { return c.id; });
+  localStorage.setItem('owlrun-card-order', JSON.stringify(order));
 }
+function restoreCardOrder() {
+  var saved = localStorage.getItem('owlrun-card-order');
+  if (!saved) return;
+  try {
+    var order = JSON.parse(saved);
+    var grid = document.getElementById('card-grid');
+    order.forEach(function(id) {
+      var card = document.getElementById(id);
+      if (card) grid.appendChild(card);
+    });
+  } catch(e) {}
+}
+restoreCardOrder();
 
 function toggleModels() {
   var ms = document.getElementById('models-section');
@@ -1735,6 +1621,9 @@ function update(d) {
     if (sats < 1) return sats.toFixed(1) + ' sats';
     return Math.round(sats).toLocaleString() + ' sats';
   }
+  // Show/hide cards that require wallet
+  document.querySelectorAll('.needs-wallet').forEach(function(c) { c.style.display = lnAddr ? '' : 'none'; });
+
   if (lnAddr) {
     document.getElementById('wallet-setup').style.display = 'none';
     document.getElementById('wallet-active').style.display = '';
@@ -1793,7 +1682,7 @@ function update(d) {
     }
 
     // Earnings stats
-    document.getElementById('wallet-today-sats').textContent = fmtSats(sw.gateway_sats);
+    // Today's sats now displayed in the merged Earnings card via today-sats element
     document.getElementById('wallet-withdrawn').textContent = fmtSats(sw.local_sats);
     if (sw.gateway_sats > 0 && thr > 0) {
       var pct = Math.min(100, Math.round(sw.gateway_sats / thr * 100));
