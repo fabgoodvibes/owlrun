@@ -947,14 +947,14 @@ const dashboardHTML = `<!DOCTYPE html>
   body { background: var(--bg); color: var(--text); font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; font-size: 17px; padding: 28px 36px; transition: background var(--transition), color var(--transition); }
   h1 { font-size: 26px; font-weight: 600; margin-bottom: 22px; color: var(--text-heading); letter-spacing: -0.3px; display: flex; align-items: center; gap: 12px; }
   h1 span { opacity: 0.6; font-weight: 400; font-size: 16px; }
-  .grid { display: grid; grid-template-columns: repeat(4, 1fr); gap: 14px; }
-  .card { background: var(--bg-card); border: 1px solid var(--border); border-radius: 12px; padding: 20px; transition: background var(--transition), border-color var(--transition); }
+  .grid { column-count: 4; column-gap: 14px; }
+  .card { background: var(--bg-card); border: 1px solid var(--border); border-radius: 12px; padding: 20px; transition: background var(--transition), border-color var(--transition); break-inside: avoid; margin-bottom: 14px; }
   .card-title { font-size: 14px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.8px; color: var(--text-dim); margin-bottom: 16px; display: flex; justify-content: space-between; align-items: center; }
-  .card-wide { grid-column: 1 / -1; }
-  .card-notify { margin-bottom: 14px; }
-  @media (max-width: 1100px) { .grid { grid-template-columns: 1fr 1fr 1fr; } }
-  @media (max-width: 800px) { .grid { grid-template-columns: 1fr 1fr; } }
-  @media (max-width: 550px) { .grid { grid-template-columns: 1fr; } }
+  .broadcast-item { display: flex; justify-content: space-between; align-items: flex-start; gap: 10px; padding: 8px 0; border-bottom: 1px solid var(--border); font-size: 14px; }
+  .broadcast-item:last-child { border-bottom: none; }
+  @media (max-width: 1100px) { .grid { column-count: 3; } }
+  @media (max-width: 800px) { .grid { column-count: 2; } }
+  @media (max-width: 550px) { .grid { column-count: 1; } }
   /* Drag and drop */
   .drag-handle { cursor: grab; color: var(--text-muted); font-size: 14px; opacity: 0.4; user-select: none; padding: 0 2px; letter-spacing: -2px; }
   .drag-handle:hover { opacity: 0.8; }
@@ -1037,9 +1037,20 @@ const dashboardHTML = `<!DOCTYPE html>
 </style>
 </head>
 <body>
-<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:22px">
+<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:14px;flex-wrap:wrap;gap:10px">
 <h1 style="margin-bottom:0">🦉 Owlrun <span id="version"></span><span id="network-badge" class="network-badge" style="display:none"></span></h1>
-<div style="display:flex;align-items:center;gap:14px">
+<div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap">
+<!-- Notifications (compact, in header) -->
+<div id="notify-card" style="position:relative">
+  <span onclick="toggleNotifications()" style="cursor:pointer;font-size:13px;color:var(--text-muted);display:flex;align-items:center;gap:4px;padding:4px 10px;border:1px solid var(--border);border-radius:6px;background:var(--bg-card)">
+    <span data-i18n="dash.notifications">Notifications</span>
+    <span id="notify-badge" style="display:none;background:var(--accent);color:#fff;font-size:10px;padding:1px 6px;border-radius:8px;font-weight:700"></span>
+    <span id="notify-arrow" style="font-size:10px;transition:transform .2s">&#9660;</span>
+  </span>
+  <div id="broadcasts" style="display:none;position:absolute;top:100%;right:0;margin-top:6px;width:360px;max-height:300px;overflow-y:auto;background:var(--bg-card);border:1px solid var(--border);border-radius:10px;padding:14px;box-shadow:0 8px 24px rgba(0,0,0,0.3);z-index:20">
+    <div class="broadcast-empty" data-i18n="dash.notifications_empty">Gateway notifications will appear here.</div>
+  </div>
+</div>
 <select id="lang-select" onchange="switchLang(this.value)" style="padding:4px 8px;border-radius:6px;border:1px solid var(--border-active);background:var(--bg-card);color:var(--text);font-size:13px;cursor:pointer"></select>
 <div class="theme-label"><span id="theme-icon">☀️</span><div class="theme-toggle" onclick="toggleTheme()"></div><span id="theme-icon2">🌙</span></div>
 </div>
@@ -1051,16 +1062,6 @@ const dashboardHTML = `<!DOCTYPE html>
       <div class="warn-body" id="wallet-warn-body"></div>
     </div>
     <button id="wallet-warn-close" onclick="dismissWalletBanner()" style="background:none;border:none;color:inherit;font-size:18px;cursor:pointer;padding:0 0 0 12px;line-height:1;opacity:0.6">&#10005;</button>
-  </div>
-</div>
-<!-- ═══ Notifications (collapsible) ═══ -->
-<div class="card card-notify" id="notify-card">
-  <div class="card-title" style="cursor:pointer;display:flex;justify-content:space-between;align-items:center" onclick="toggleNotifications()">
-    <span><span data-i18n="dash.notifications">Notifications</span> <span id="notify-badge" style="display:none;background:var(--accent);color:#fff;font-size:11px;padding:1px 7px;border-radius:10px;margin-left:6px;font-weight:700"></span></span>
-    <span id="notify-arrow" style="font-size:12px;transition:transform .2s">&#9660;</span>
-  </div>
-  <div id="broadcasts" style="display:none">
-    <div class="broadcast-empty" data-i18n="dash.notifications_empty">Gateway notifications will appear here.</div>
   </div>
 </div>
 
