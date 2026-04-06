@@ -25,6 +25,7 @@ import (
 	"github.com/fabgoodvibes/owlrun/internal/disk"
 	"github.com/fabgoodvibes/owlrun/internal/earnings"
 	"github.com/fabgoodvibes/owlrun/internal/gpu"
+	"github.com/fabgoodvibes/owlrun/internal/i18n"
 	"github.com/fabgoodvibes/owlrun/internal/idle"
 	"github.com/fabgoodvibes/owlrun/internal/inference"
 	"github.com/fabgoodvibes/owlrun/internal/marketplace"
@@ -154,7 +155,8 @@ func Run(cfg config.Config, dash *dashboard.Server, mockMode bool) {
 // onReady is called by systray once the tray is initialized.
 func (a *Agent) onReady() {
 	a.applyIcon()
-	systray.SetTooltip("Owlrun — idle GPU earning")
+	i18n.SetLocale(i18n.DetectLocale())
+	systray.SetTooltip(i18n.T("tray.tooltip"))
 
 	// Status line (read-only)
 	a.mStatus = systray.AddMenuItem(a.stateLabel(), "")
@@ -163,14 +165,14 @@ func (a *Agent) onReady() {
 
 	// Earnings (read-only)
 	snap := a.tracker.Get()
-	a.mToday = systray.AddMenuItem(fmtToday(snap.Today), "Earnings today")
+	a.mToday = systray.AddMenuItem(fmtToday(snap.Today), i18n.T("tray.earnings_today"))
 	a.mToday.Disable()
-	a.mTotal = systray.AddMenuItem(fmtTotal(snap.Total), "All-time earnings")
+	a.mTotal = systray.AddMenuItem(fmtTotal(snap.Total), i18n.T("tray.earnings_total"))
 	a.mTotal.Disable()
 	systray.AddSeparator()
 
 	// Wallet warning
-	a.mWalletWarn = systray.AddMenuItem("⚠ Set your payout wallet in ~/.owlrun/owlrun.conf", "")
+	a.mWalletWarn = systray.AddMenuItem(i18n.T("tray.wallet_warning"), "")
 	a.mWalletWarn.Disable()
 	if !config.NeedsWallet(&a.cfg) {
 		a.mWalletWarn.Hide()
@@ -178,14 +180,14 @@ func (a *Agent) onReady() {
 	systray.AddSeparator()
 
 	// Actions
-	a.mToggle = systray.AddMenuItem(a.toggleLabel(), "Pause or resume Owlrun")
-	a.mDashboard = systray.AddMenuItem("Open Dashboard", "Open localhost:19131")
+	a.mToggle = systray.AddMenuItem(a.toggleLabel(), i18n.T("tray.toggle_tip"))
+	a.mDashboard = systray.AddMenuItem(i18n.T("tray.open_dashboard"), i18n.T("tray.open_dashboard_tip"))
 
 	// Job mode submenu
-	a.mJobMode = systray.AddMenuItem("Accept Jobs", "")
-	a.mJobNever = a.mJobMode.AddSubMenuItem("Never", "Never accept jobs")
-	a.mJobIdle = a.mJobMode.AddSubMenuItem(fmt.Sprintf("After idle %dm", a.cfg.Idle.TriggerMinutes), "Accept jobs after idle timeout")
-	a.mJobAlways = a.mJobMode.AddSubMenuItem("Always", "Always accept jobs")
+	a.mJobMode = systray.AddMenuItem(i18n.T("tray.accept_jobs"), "")
+	a.mJobNever = a.mJobMode.AddSubMenuItem(i18n.T("tray.job_never"), i18n.T("tray.job_never_tip"))
+	a.mJobIdle = a.mJobMode.AddSubMenuItem(i18n.T("tray.job_idle_fmt", a.cfg.Idle.TriggerMinutes), i18n.T("tray.job_idle_tip"))
+	a.mJobAlways = a.mJobMode.AddSubMenuItem(i18n.T("tray.job_always"), i18n.T("tray.job_always_tip"))
 	a.applyJobModeChecks()
 
 	systray.AddSeparator()
@@ -196,17 +198,17 @@ func (a *Agent) onReady() {
 	// Color legend
 	systray.AddSeparator()
 	for _, l := range []string{
-		"🟢 Green  — Connected & earning",
-		"🟡 Yellow — Getting ready",
-		"🔵 Blue   — Wallet not set",
-		"🔴 Red    — Error",
-		"⚪ Grey   — Paused",
+		i18n.T("tray.legend.green"),
+		i18n.T("tray.legend.yellow"),
+		i18n.T("tray.legend.blue"),
+		i18n.T("tray.legend.red"),
+		i18n.T("tray.legend.grey"),
 	} {
 		m := systray.AddMenuItem(l, "")
 		m.Disable()
 	}
 	systray.AddSeparator()
-	a.mQuit = systray.AddMenuItem("Quit", "Exit Owlrun")
+	a.mQuit = systray.AddMenuItem(i18n.T("tray.quit"), i18n.T("tray.quit_tip"))
 
 	if a.dash != nil {
 		a.dash.SetProvider(a.statusSnapshot)
@@ -466,7 +468,7 @@ func (a *Agent) startEarning() {
 			a.mu.Lock()
 			a.starting = false
 			a.state = StateError
-			a.errorDetail = "Mock Ollama failed to start: " + err.Error()
+			a.errorDetail = i18n.T("tray.err.mock_failed", err.Error())
 			a.refreshMenuLocked()
 			a.mu.Unlock()
 			return
@@ -497,7 +499,7 @@ func (a *Agent) startEarning() {
 		a.mu.Lock()
 		a.starting = false
 		a.state = StateError
-		a.errorDetail = "Ollama is not installed. Download it from ollama.com/download, install it, then restart Owlrun."
+		a.errorDetail = i18n.T("tray.err.not_installed")
 		a.refreshMenuLocked()
 		a.mu.Unlock()
 		return
@@ -507,7 +509,7 @@ func (a *Agent) startEarning() {
 		a.mu.Lock()
 		a.starting = false
 		a.state = StateError
-		a.errorDetail = "Ollama failed to start. Make sure Ollama is installed (ollama.com/download) and try restarting Owlrun."
+		a.errorDetail = i18n.T("tray.err.start_failed")
 		a.refreshMenuLocked()
 		a.mu.Unlock()
 		return
@@ -529,7 +531,7 @@ func (a *Agent) startEarning() {
 			a.mu.Lock()
 			a.starting = false
 			a.state = StateError
-			a.errorDetail = "No AI models installed. Open the dashboard at localhost:19131 and download a model, or run: ollama pull qwen2.5:0.5b"
+			a.errorDetail = i18n.T("tray.err.no_models")
 			a.refreshMenuLocked()
 			a.mu.Unlock()
 			return
@@ -626,26 +628,26 @@ func (a *Agent) applyIcon() {
 func (a *Agent) stateLabel() string {
 	switch a.state {
 	case StateEarning:
-		return "🟢 Earning"
+		return i18n.T("tray.state.earning")
 	case StateIdle:
-		return "🟡 Idle — waiting"
+		return i18n.T("tray.state.idle")
 	case StateReady:
-		return "🟡 Getting ready"
+		return i18n.T("tray.state.ready")
 	case StateMissingWallet:
-		return "🔵 Wallet not set"
+		return i18n.T("tray.state.wallet")
 	case StateError:
-		return "🔴 Error"
+		return i18n.T("tray.state.error")
 	case StatePaused:
-		return "⚪ Paused"
+		return i18n.T("tray.state.paused")
 	}
 	return ""
 }
 
 func (a *Agent) toggleLabel() string {
 	if a.manuallyPaused {
-		return "Resume"
+		return i18n.T("tray.resume")
 	}
-	return "Pause"
+	return i18n.T("tray.pause")
 }
 
 // earningsRefreshLoop polls the earnings tracker and updates menu items.
@@ -684,7 +686,7 @@ func (a *Agent) checkDisk(showDialogIfCritical bool) {
 	switch {
 	case info.FreeGB < minGB:
 		// Critical: not enough space even for the smallest model.
-		a.mDiskWarn.SetTitle(fmt.Sprintf("⚠  Only %.1f GB free — downloads blocked", info.FreeGB))
+		a.mDiskWarn.SetTitle(i18n.T("tray.disk_critical_fmt", info.FreeGB))
 		a.mDiskWarn.Show()
 		if showDialogIfCritical {
 			disk.CriticalDialog(info, minGB)
@@ -692,7 +694,7 @@ func (a *Agent) checkDisk(showDialogIfCritical bool) {
 
 	case info.FreePct < warnPct:
 		// Warning: below threshold but still workable.
-		a.mDiskWarn.SetTitle(fmt.Sprintf("⚠  Low disk: %.1f GB free (%.0f%%)", info.FreeGB, info.FreePct))
+		a.mDiskWarn.SetTitle(i18n.T("tray.disk_warning_fmt", info.FreeGB, info.FreePct))
 		a.mDiskWarn.Show()
 		if showDialogIfCritical {
 			disk.WarnDialog(info, a.cfg.Disk.WarnThresholdPct)
@@ -747,8 +749,8 @@ func (a *Agent) applyJobModeChecks() {
 	}
 }
 
-func fmtToday(v float64) string { return fmt.Sprintf("Today:  $%.2f", v) }
-func fmtTotal(v float64) string { return fmt.Sprintf("Total:  $%.2f", v) }
+func fmtToday(v float64) string { return i18n.T("tray.today_fmt", v) }
+func fmtTotal(v float64) string { return i18n.T("tray.total_fmt", v) }
 
 // statusSnapshot assembles a dashboard.Status from live subsystem data.
 // This is the StatusProvider function wired into the dashboard in onReady.
@@ -767,9 +769,9 @@ func (a *Agent) statusSnapshot() dashboard.Status {
 	s.Network = buildinfo.Network
 	s.Wallet.Address = a.cfg.Account.Wallet
 	if config.NeedsWallet(&a.cfg) {
-		s.Wallet.Warning = "Set your Lightning address in the Wallet section to start earning Bitcoin."
+		s.Wallet.Warning = i18n.T("tray.wallet_msg")
 	} else if a.cfg.Account.LightningAddress != "" {
-		s.Wallet.Configured = "Wallet configured at " + a.cfg.Account.LightningAddress
+		s.Wallet.Configured = a.cfg.Account.LightningAddress
 	}
 	switch state {
 	case StateEarning:

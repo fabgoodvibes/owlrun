@@ -11,11 +11,13 @@ import (
 	"log"
 	"net"
 	"net/http"
+	"sort"
 	"strings"
 	"sync/atomic"
 	"time"
 
 	"github.com/fabgoodvibes/owlrun/internal/buildinfo"
+	"github.com/fabgoodvibes/owlrun/internal/i18n"
 	"github.com/fabgoodvibes/owlrun/internal/cashu"
 	"github.com/fabgoodvibes/owlrun/internal/earnings"
 )
@@ -300,6 +302,8 @@ func (s *Server) Start() error {
 	mux.HandleFunc("/api/set-context-length", s.handleSetContextLength)
 	mux.HandleFunc("/api/set-free-tier", s.handleSetFreeTier)
 	mux.HandleFunc("/api/set-keep-warm", s.handleSetKeepWarm)
+	mux.HandleFunc("/api/locale", handleLocale)
+	mux.HandleFunc("/api/locales", handleLocales)
 	addr := fmt.Sprintf("127.0.0.1:%d", s.port)
 	ln, err := net.Listen("tcp", addr)
 	if err != nil {
@@ -850,9 +854,43 @@ func isValidLightningAddress(addr string) bool {
 	return true
 }
 
+// handleLocale serves the full translation map for a given locale.
+// GET /api/locale?lang=ca → JSON map of key→string.
+func handleLocale(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Content-Type", "application/json")
+	w.Header().Set("Access-Control-Allow-Origin", "*")
+	lang := r.URL.Query().Get("lang")
+	if lang == "" {
+		lang = "en"
+	}
+	json.NewEncoder(w).Encode(i18n.Messages(lang))
+}
+
+// handleLocales returns the list of available locales with display names.
+// GET /api/locales → [{"code":"en","name":"English"}, …]
+func handleLocales(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Content-Type", "application/json")
+	w.Header().Set("Access-Control-Allow-Origin", "*")
+	type localeInfo struct {
+		Code string `json:"code"`
+		Name string `json:"name"`
+	}
+	var out []localeInfo
+	for _, code := range i18n.Locales() {
+		msgs := i18n.Messages(code)
+		name := code
+		if v, ok := msgs["_lang"]; ok {
+			name = v
+		}
+		out = append(out, localeInfo{Code: code, Name: name})
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].Code < out[j].Code })
+	json.NewEncoder(w).Encode(out)
+}
+
 func (s *Server) handleIndex(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
-	fmt.Fprint(w, dashboardHTML)
+	io.WriteString(w, dashboardHTML) //nolint:errcheck
 }
 
 const dashboardHTML = `<!DOCTYPE html>
@@ -860,7 +898,7 @@ const dashboardHTML = `<!DOCTYPE html>
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Owlrun Dashboard</title>
+<title data-i18n="dash.title">Owlrun Dashboard</title>
 <style>
   :root {
     --accent: #f59e0b;
@@ -909,14 +947,14 @@ const dashboardHTML = `<!DOCTYPE html>
   body { background: var(--bg); color: var(--text); font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; font-size: 17px; padding: 28px 36px; transition: background var(--transition), color var(--transition); }
   h1 { font-size: 26px; font-weight: 600; margin-bottom: 22px; color: var(--text-heading); letter-spacing: -0.3px; display: flex; align-items: center; gap: 12px; }
   h1 span { opacity: 0.6; font-weight: 400; font-size: 16px; }
-  .grid { display: grid; grid-template-columns: 1fr 1fr 1fr 1fr; grid-template-rows: auto auto; gap: 14px; }
+  .grid { display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 14px; }
   .card { background: var(--bg-card); border: 1px solid var(--border); border-radius: 12px; padding: 20px; transition: background var(--transition), border-color var(--transition); }
   .card-title { font-size: 14px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.8px; color: var(--text-dim); margin-bottom: 16px; }
-  .card-wallet { grid-row: 1 / 3; }
+  .card-wallet { grid-row: 1 / 4; }
   .card-wide { grid-column: 1 / -1; }
   .card-notify { margin-bottom: 14px; }
   @media (max-width: 900px) { .grid { grid-template-columns: 1fr 1fr; } .card-wallet { grid-row: auto; } }
-  @media (max-width: 550px) { .grid { grid-template-columns: 1fr; } .card-wallet { grid-row: auto; } }
+  @media (max-width: 650px) { .grid { grid-template-columns: 1fr; } .card-wallet { grid-row: auto; } }
   .stat { display: flex; justify-content: space-between; align-items: center; margin-bottom: 10px; min-height: 26px; }
   .stat:last-child { margin-bottom: 0; }
   .stat-label { color: var(--text); font-size: 16px; }
@@ -977,22 +1015,38 @@ const dashboardHTML = `<!DOCTYPE html>
   .payout-link { color: var(--accent); text-decoration: none; font-size: 11px; font-family: monospace; }
   .payout-link:hover { text-decoration: underline; }
   .payout-time { color: var(--text-muted); font-size: 11px; }
+  .cfg-tab { background: var(--bg-card-hover); border: 1px solid var(--border); color: var(--text-muted); padding: 6px 12px; font-size: 12px; font-weight: 600; cursor: pointer; transition: all 0.15s; flex: 1; text-align: center; }
+  .cfg-tab:first-child { border-radius: 6px 0 0 6px; }
+  .cfg-tab:last-child { border-radius: 0 6px 6px 0; }
+  .cfg-tab:not(:first-child) { border-left: none; }
+  .cfg-tab.active { background: var(--accent); color: #fff; border-color: var(--accent); }
 </style>
 </head>
 <body>
 <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:22px">
 <h1 style="margin-bottom:0">🦉 Owlrun <span id="version"></span><span id="network-badge" class="network-badge" style="display:none"></span></h1>
+<div style="display:flex;align-items:center;gap:14px">
+<select id="lang-select" onchange="switchLang(this.value)" style="padding:4px 8px;border-radius:6px;border:1px solid var(--border-active);background:var(--bg-card);color:var(--text);font-size:13px;cursor:pointer"></select>
 <div class="theme-label"><span id="theme-icon">☀️</span><div class="theme-toggle" onclick="toggleTheme()"></div><span id="theme-icon2">🌙</span></div>
 </div>
-<div id="wallet-warn" class="wallet-warn">
-  <div class="warn-title">Wallet not configured</div>
-  <div class="warn-body" id="wallet-warn-body"></div>
 </div>
-<!-- ═══ Notifications (full width, above grid) ═══ -->
+<div id="wallet-warn" class="wallet-warn">
+  <div style="display:flex;justify-content:space-between;align-items:flex-start">
+    <div>
+      <div class="warn-title" data-i18n="dash.wallet_not_configured">Wallet not configured</div>
+      <div class="warn-body" id="wallet-warn-body"></div>
+    </div>
+    <button id="wallet-warn-close" onclick="dismissWalletBanner()" style="background:none;border:none;color:inherit;font-size:18px;cursor:pointer;padding:0 0 0 12px;line-height:1;opacity:0.6">&#10005;</button>
+  </div>
+</div>
+<!-- ═══ Notifications (collapsible) ═══ -->
 <div class="card card-notify" id="notify-card">
-  <div class="card-title">Notifications</div>
-  <div id="broadcasts">
-    <div class="broadcast-empty">Gateway notifications will appear here.</div>
+  <div class="card-title" style="cursor:pointer;display:flex;justify-content:space-between;align-items:center" onclick="toggleNotifications()">
+    <span><span data-i18n="dash.notifications">Notifications</span> <span id="notify-badge" style="display:none;background:var(--accent);color:#fff;font-size:11px;padding:1px 7px;border-radius:10px;margin-left:6px;font-weight:700"></span></span>
+    <span id="notify-arrow" style="font-size:12px;transition:transform .2s">&#9660;</span>
+  </div>
+  <div id="broadcasts" style="display:none">
+    <div class="broadcast-empty" data-i18n="dash.notifications_empty">Gateway notifications will appear here.</div>
   </div>
 </div>
 
@@ -1000,11 +1054,11 @@ const dashboardHTML = `<!DOCTYPE html>
 
   <!-- ═══ Wallet (col 1, spans 2 rows) ═══ -->
   <div class="card card-wallet" id="wallet-card">
-    <div class="card-title">Wallet</div>
+    <div class="card-title" data-i18n="dash.wallet">Wallet</div>
     <div id="wallet-setup" style="display:none">
       <div style="text-align:center;padding:8px 0 16px">
         <div style="font-size:28px;margin-bottom:8px">&#9889;</div>
-        <div style="font-size:16px;color:#d0d0e0;font-weight:600;margin-bottom:12px">Set up your wallet to get paid</div>
+        <div style="font-size:16px;color:#d0d0e0;font-weight:600;margin-bottom:12px" data-i18n="dash.wallet_setup_heading">Set up your wallet to get paid</div>
         <div style="text-align:left;font-size:14px;color:#aaaabb;line-height:1.8">
           <div style="margin-bottom:8px"><span style="color:#f7931a;font-weight:600">1.</span> Install <a href="https://www.minibits.cash/" target="_blank" style="color:#f7931a;text-decoration:underline">Minibits</a> wallet (by Bitango Technologies)</div>
           <div style="margin-bottom:8px"><span style="color:#f7931a;font-weight:600">2.</span> Find your Lightning address in Minibits (looks like <code style="background:var(--code-bg);padding:2px 6px;border-radius:4px;font-size:13px;color:#f7931a">you@minibits.cash</code>)</div>
@@ -1013,182 +1067,189 @@ const dashboardHTML = `<!DOCTYPE html>
       </div>
       <div style="margin-top:12px">
         <input id="ln-address-input" type="text" placeholder="yourname@minibits.cash" style="width:100%;padding:12px 14px;background:var(--bg);color:var(--accent);border:1px solid var(--border-active);border-radius:8px;font-size:15px;font-family:monospace;box-sizing:border-box" />
-        <button id="btn-save-ln" onclick="saveLightningAddress()" style="width:100%;margin-top:8px;padding:12px 16px;background:#f7931a;color:#fff;border:none;border-radius:8px;cursor:pointer;font-weight:600;font-size:15px">Save &amp; Start Earning</button>
+        <button id="btn-save-ln" onclick="saveLightningAddress()" style="width:100%;margin-top:8px;padding:12px 16px;background:#f7931a;color:#fff;border:none;border-radius:8px;cursor:pointer;font-weight:600;font-size:15px" data-i18n="dash.wallet_save_btn">Save &amp; Start Earning</button>
         <div id="ln-save-error" style="display:none;color:#ef4444;font-size:13px;margin-top:6px;text-align:center"></div>
       </div>
-      <div style="margin-top:14px;font-size:13px;color:var(--text-muted);text-align:center">
+      <div style="margin-top:14px;font-size:13px;color:var(--text-muted);text-align:center" data-i18n="dash.wallet_any_wallet">
         Works with any Lightning wallet — Minibits, Phoenix, Wallet of Satoshi, etc.
       </div>
     </div>
     <div id="wallet-active" style="display:none">
       <div class="stat">
-        <span class="stat-label">Lightning address</span>
+        <span class="stat-label" data-i18n="dash.wallet_ln_address">Lightning address</span>
         <span class="stat-value" id="ln-address-display" style="color:#f7931a;font-family:monospace;font-size:14px;max-width:200px;text-align:right;word-break:break-all"></span>
       </div>
       <div style="margin-top:10px">
-        <button onclick="toggleEditLnAddress()" style="padding:6px 14px;background:var(--bg-card-hover);color:var(--text);border:1px solid var(--border-active);border-radius:6px;cursor:pointer;font-size:13px">Change address</button>
+        <button onclick="toggleEditLnAddress()" style="padding:6px 14px;background:var(--bg-card-hover);color:var(--text);border:1px solid var(--border-active);border-radius:6px;cursor:pointer;font-size:13px" data-i18n="dash.wallet_change">Change address</button>
       </div>
       <div id="edit-ln-section" style="display:none;margin-top:10px">
         <input id="ln-address-edit" type="text" style="width:100%;padding:10px 12px;background:var(--bg);color:var(--accent);border:1px solid var(--border-active);border-radius:8px;font-size:14px;font-family:monospace;box-sizing:border-box" />
         <div style="display:flex;gap:6px;margin-top:6px">
-          <button onclick="saveLightningAddressEdit()" style="flex:1;padding:8px 12px;background:#f7931a;color:#fff;border:none;border-radius:6px;cursor:pointer;font-weight:600;font-size:13px">Save</button>
-          <button onclick="toggleEditLnAddress()" style="padding:8px 12px;background:var(--bg-card-hover);color:var(--text);border:1px solid var(--border-active);border-radius:6px;cursor:pointer;font-size:13px">Cancel</button>
+          <button onclick="saveLightningAddressEdit()" style="flex:1;padding:8px 12px;background:#f7931a;color:#fff;border:none;border-radius:6px;cursor:pointer;font-weight:600;font-size:13px" data-i18n="dash.wallet_save">Save</button>
+          <button onclick="toggleEditLnAddress()" style="padding:8px 12px;background:var(--bg-card-hover);color:var(--text);border:1px solid var(--border-active);border-radius:6px;cursor:pointer;font-size:13px" data-i18n="dash.wallet_cancel">Cancel</button>
         </div>
         <div id="ln-edit-error" style="display:none;color:#ef4444;font-size:13px;margin-top:6px"></div>
       </div>
 
-      <!-- Payout threshold slider -->
-      <div style="margin-top:16px;padding-top:14px;border-top:1px solid var(--border)">
-        <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:6px">
-          <span style="font-size:14px;color:#d0d0e0">Payout threshold</span>
-          <span id="threshold-value" style="font-size:14px;color:#f7931a;font-weight:600">500 sats</span>
-        </div>
-        <input id="threshold-slider" type="range" min="100" max="1000" step="50" value="500" oninput="updateThresholdDisplay(this.value)" onchange="saveRedeemThreshold(this.value)" style="width:100%;accent-color:#f7931a;cursor:pointer" />
-        <div style="display:flex;justify-content:space-between;font-size:12px;color:var(--text-muted);margin-top:2px">
-          <span>100</span><span>500</span><span>1000</span>
-        </div>
-        <div style="font-size:13px;color:#aaaabb;margin-top:6px" id="threshold-hint">Lower = faster payouts, higher fees. Higher = slower payouts, lower fees.</div>
-        <div style="font-size:13px;margin-top:4px">
-          <span style="color:#aaaabb">Est. Lightning fee: </span>
-          <span id="fee-estimate" style="color:#f7931a;font-weight:600">~1%</span>
-        </div>
-        <div style="margin-top:8px">
-          <label style="display:flex;align-items:center;gap:8px;cursor:pointer;font-size:13px;color:var(--text-muted)">
-            <input type="checkbox" id="unlock-50" onchange="toggleLowThreshold(this.checked)" style="accent-color:#f7931a" />
-            Unlock 50 sat minimum
-          </label>
-          <div id="low-threshold-warn" style="display:none;font-size:12px;color:#eab308;margin-top:4px;margin-left:24px">&#9888; ~10% eaten by Lightning fees at this level</div>
-        </div>
-      </div>
-
-      <!-- Job mode selector -->
+      <!-- Job mode selector (always visible) -->
       <div style="margin-top:16px;padding-top:14px;border-top:1px solid var(--border)">
         <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px">
-          <span style="font-size:14px;color:#d0d0e0">Accept jobs</span>
+          <span style="font-size:14px;color:#d0d0e0" data-i18n="dash.accept_jobs">Accept jobs</span>
           <span id="job-mode-label" style="font-size:13px;color:var(--text-muted)"></span>
         </div>
         <div id="job-mode-btns" style="display:flex;gap:6px">
-          <button onclick="setJobMode('always')" id="jm-always" style="flex:1;padding:8px 0;border-radius:6px;border:1px solid var(--border-active);background:var(--bg-card-hover);color:var(--text);cursor:pointer;font-size:13px;font-weight:600;transition:all .15s">Always</button>
-          <button onclick="setJobMode('idle')" id="jm-idle" style="flex:1;padding:8px 0;border-radius:6px;border:1px solid var(--border-active);background:var(--bg-card-hover);color:var(--text);cursor:pointer;font-size:13px;font-weight:600;transition:all .15s">When idle</button>
-          <button onclick="setJobMode('never')" id="jm-never" style="flex:1;padding:8px 0;border-radius:6px;border:1px solid var(--border-active);background:var(--bg-card-hover);color:var(--text);cursor:pointer;font-size:13px;font-weight:600;transition:all .15s">Never</button>
+          <button onclick="setJobMode('always')" id="jm-always" style="flex:1;padding:8px 0;border-radius:6px;border:1px solid var(--border-active);background:var(--bg-card-hover);color:var(--text);cursor:pointer;font-size:13px;font-weight:600;transition:all .15s" data-i18n="dash.job_always">Always</button>
+          <button onclick="setJobMode('idle')" id="jm-idle" style="flex:1;padding:8px 0;border-radius:6px;border:1px solid var(--border-active);background:var(--bg-card-hover);color:var(--text);cursor:pointer;font-size:13px;font-weight:600;transition:all .15s" data-i18n="dash.job_idle">When idle</button>
+          <button onclick="setJobMode('never')" id="jm-never" style="flex:1;padding:8px 0;border-radius:6px;border:1px solid var(--border-active);background:var(--bg-card-hover);color:var(--text);cursor:pointer;font-size:13px;font-weight:600;transition:all .15s" data-i18n="dash.job_never">Never</button>
         </div>
         <div id="job-mode-hint" style="font-size:12px;color:var(--text-muted);margin-top:6px"></div>
       </div>
 
-      <!-- Karma & Free Tier -->
+      <!-- Settings tabs -->
       <div style="margin-top:16px;padding-top:14px;border-top:1px solid var(--border)">
-        <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:10px">
-          <span style="font-size:14px;color:#d0d0e0">Karma</span>
-          <span id="karma-badge" style="font-size:11px;padding:2px 8px;border-radius:4px;font-weight:700;text-transform:uppercase"></span>
+        <div id="cfg-tabs" style="display:flex;gap:0;margin-bottom:14px">
+          <button onclick="showCfgTab('payout')" data-cfg="payout" class="cfg-tab active" data-i18n="dash.payout_threshold">Payout</button>
+          <button onclick="showCfgTab('karma')" data-cfg="karma" class="cfg-tab" data-i18n="dash.karma">Karma</button>
+          <button onclick="showCfgTab('model-cfg')" data-cfg="model-cfg" class="cfg-tab" data-i18n="dash.model">Model</button>
         </div>
-        <div class="stat">
-          <span class="stat-label">Karma score</span>
-          <span class="stat-value" id="karma-score">0</span>
-        </div>
-        <div class="stat">
-          <span class="stat-label">Free tier jobs served</span>
-          <span class="stat-value" id="free-tier-jobs">0</span>
-        </div>
-        <div style="margin-top:10px">
+
+        <!-- Tab: Payout -->
+        <div id="cfg-payout" class="cfg-panel">
           <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:6px">
-            <span style="font-size:13px;color:var(--text-muted)">Donate to free tier</span>
-            <span id="free-tier-value" style="font-size:14px;color:#f7931a;font-weight:600">0%</span>
+            <span style="font-size:14px;color:#d0d0e0" data-i18n="dash.payout_threshold">Payout threshold</span>
+            <span id="threshold-value" style="font-size:14px;color:#f7931a;font-weight:600">500 sats</span>
           </div>
-          <input id="free-tier-slider" type="range" min="0" max="100" step="5" value="0" oninput="updateFreeTierDisplay(this.value)" onchange="saveFreeTierPct(this.value)" style="width:100%;accent-color:#f7931a;cursor:pointer" />
+          <input id="threshold-slider" type="range" min="100" max="1000" step="50" value="500" oninput="updateThresholdDisplay(this.value)" onchange="saveRedeemThreshold(this.value)" style="width:100%;accent-color:#f7931a;cursor:pointer" />
           <div style="display:flex;justify-content:space-between;font-size:12px;color:var(--text-muted);margin-top:2px">
-            <span>0%</span><span>50%</span><span>100%</span>
+            <span>100</span><span>500</span><span>1000</span>
           </div>
-          <div style="font-size:12px;color:var(--text-muted);margin-top:6px">Share idle cycles with free-tier users. Higher donation = more karma = more paid traffic routed to you.</div>
-        </div>
-      </div>
-
-      <!-- Keep warm toggle -->
-      <div style="margin-top:16px;padding-top:14px;border-top:1px solid var(--border)">
-        <div style="display:flex;justify-content:space-between;align-items:center">
-          <div>
-            <span style="font-size:14px;color:var(--text)">Keep model warm</span>
-            <div style="font-size:12px;color:var(--text-muted);margin-top:2px">Ping every 4 min to prevent VRAM eviction</div>
+          <div style="font-size:13px;color:#aaaabb;margin-top:6px" id="threshold-hint" data-i18n="dash.payout_threshold_hint">Lower = faster payouts, higher fees. Higher = slower payouts, lower fees.</div>
+          <div style="font-size:13px;margin-top:4px">
+            <span style="color:#aaaabb" data-i18n="dash.payout_fee_label">Est. Lightning fee: </span>
+            <span id="fee-estimate" style="color:#f7931a;font-weight:600">~1%</span>
           </div>
-          <input type="checkbox" id="keep-warm-toggle" checked onchange="setKeepWarm(this.checked)" style="accent-color:#f7931a;width:18px;height:18px;cursor:pointer" />
+          <div style="margin-top:8px">
+            <label style="display:flex;align-items:center;gap:8px;cursor:pointer;font-size:13px;color:var(--text-muted)">
+              <input type="checkbox" id="unlock-50" onchange="toggleLowThreshold(this.checked)" style="accent-color:#f7931a" />
+              <span data-i18n="dash.payout_unlock_50">Unlock 50 sat minimum</span>
+            </label>
+            <div id="low-threshold-warn" style="display:none;font-size:12px;color:#eab308;margin-top:4px;margin-left:24px">&#9888; ~10% eaten by Lightning fees at this level</div>
+          </div>
         </div>
-      </div>
 
-      <!-- Context length selector -->
-      <div style="margin-top:16px;padding-top:14px;border-top:1px solid var(--border)">
-        <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px">
-          <span style="font-size:14px;color:#d0d0e0">Context length</span>
-          <span id="ctx-len-label" style="font-size:13px;color:var(--text-muted)">8192</span>
+        <!-- Tab: Karma -->
+        <div id="cfg-karma" class="cfg-panel" style="display:none">
+          <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:10px">
+            <span style="font-size:14px;color:#d0d0e0" data-i18n="dash.karma">Karma</span>
+            <span id="karma-badge" style="font-size:11px;padding:2px 8px;border-radius:4px;font-weight:700;text-transform:uppercase"></span>
+          </div>
+          <div class="stat">
+            <span class="stat-label" data-i18n="dash.karma_score">Karma score</span>
+            <span class="stat-value" id="karma-score">0</span>
+          </div>
+          <div class="stat">
+            <span class="stat-label" data-i18n="dash.free_tier_jobs">Free tier jobs served</span>
+            <span class="stat-value" id="free-tier-jobs">0</span>
+          </div>
+          <div style="margin-top:10px">
+            <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:6px">
+              <span style="font-size:13px;color:var(--text-muted)" data-i18n="dash.donate_free_tier">Donate to free tier</span>
+              <span id="free-tier-value" style="font-size:14px;color:#f7931a;font-weight:600">0%</span>
+            </div>
+            <input id="free-tier-slider" type="range" min="0" max="100" step="5" value="0" oninput="updateFreeTierDisplay(this.value)" onchange="saveFreeTierPct(this.value)" style="width:100%;accent-color:#f7931a;cursor:pointer" />
+            <div style="display:flex;justify-content:space-between;font-size:12px;color:var(--text-muted);margin-top:2px">
+              <span>0%</span><span>50%</span><span>100%</span>
+            </div>
+            <div style="font-size:12px;color:var(--text-muted);margin-top:6px" data-i18n="dash.donate_hint">Share idle cycles with free-tier users. Higher donation = more karma = more paid traffic routed to you.</div>
+          </div>
         </div>
-        <div style="display:flex;gap:6px">
-          <select id="ctx-len-select" onchange="setContextLength(this.value)" style="flex:1;padding:8px 10px;border-radius:6px;border:1px solid var(--border-active);background:var(--bg-card-hover);color:var(--text);font-size:13px;cursor:pointer;appearance:auto">
-            <option value="2048">2K (2048)</option>
-            <option value="4096">4K (4096)</option>
-            <option value="8192" selected>8K (8192)</option>
-            <option value="16384">16K (16384)</option>
-            <option value="32768">32K (32768)</option>
-            <option value="65536">64K (65536)</option>
-            <option value="131072">128K (131072)</option>
-            <option value="262144">256K (262144)</option>
-          </select>
+
+        <!-- Tab: Model config -->
+        <div id="cfg-model-cfg" class="cfg-panel" style="display:none">
+          <div style="display:flex;justify-content:space-between;align-items:center">
+            <div>
+              <span style="font-size:14px;color:var(--text)" data-i18n="dash.keep_warm">Keep model warm</span>
+              <div style="font-size:12px;color:var(--text-muted);margin-top:2px" data-i18n="dash.keep_warm_hint">Ping every 4 min to prevent VRAM eviction</div>
+            </div>
+            <input type="checkbox" id="keep-warm-toggle" checked onchange="setKeepWarm(this.checked)" style="accent-color:#f7931a;width:18px;height:18px;cursor:pointer" />
+          </div>
+          <div style="margin-top:14px;padding-top:14px;border-top:1px solid var(--border)">
+            <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px">
+              <span style="font-size:14px;color:#d0d0e0" data-i18n="dash.context_length">Context length</span>
+              <span id="ctx-len-label" style="font-size:13px;color:var(--text-muted)">8192</span>
+            </div>
+            <div style="display:flex;gap:6px">
+              <select id="ctx-len-select" onchange="setContextLength(this.value)" style="flex:1;padding:8px 10px;border-radius:6px;border:1px solid var(--border-active);background:var(--bg-card-hover);color:var(--text);font-size:13px;cursor:pointer;appearance:auto">
+                <option value="2048">2K (2048)</option>
+                <option value="4096">4K (4096)</option>
+                <option value="8192" selected>8K (8192)</option>
+                <option value="16384">16K (16384)</option>
+                <option value="32768">32K (32768)</option>
+                <option value="65536">64K (65536)</option>
+                <option value="131072">128K (131072)</option>
+                <option value="262144">256K (262144)</option>
+              </select>
+            </div>
+            <div style="font-size:12px;color:var(--text-muted);margin-top:6px" data-i18n="dash.context_hint">Higher values use more VRAM. Model reloads on change.</div>
+          </div>
         </div>
-        <div style="font-size:12px;color:var(--text-muted);margin-top:6px">Higher values use more VRAM. Model reloads on change.</div>
       </div>
 
       <!-- Earnings stats -->
       <div style="margin-top:16px;padding-top:14px;border-top:1px solid var(--border)">
         <div class="stat">
-          <span class="stat-label">Pending earnings</span>
+          <span class="stat-label" data-i18n="dash.pending_earnings">Pending earnings</span>
           <span class="stat-value" id="sats-gateway" style="color:#f7931a;font-weight:bold">0 sats</span>
         </div>
         <div class="stat">
-          <span class="stat-label">USD approx</span>
+          <span class="stat-label" data-i18n="dash.usd_approx">USD approx</span>
           <span class="stat-value" id="sats-usd">$0.00</span>
         </div>
         <div class="stat">
-          <span class="stat-label">Today's earnings</span>
+          <span class="stat-label" data-i18n="dash.today_earnings">Today's earnings</span>
           <span class="stat-value" id="wallet-today-sats" style="color:#22c55e">0 sats</span>
         </div>
         <div class="stat">
-          <span class="stat-label">Total withdrawn</span>
+          <span class="stat-label" data-i18n="dash.total_withdrawn">Total withdrawn</span>
           <span class="stat-value" id="wallet-withdrawn">0 sats</span>
         </div>
         <div class="stat">
-          <span class="stat-label">Next payout est.</span>
+          <span class="stat-label" data-i18n="dash.next_payout">Next payout est.</span>
           <span class="stat-value" id="wallet-next-payout" style="font-size:14px;color:#aaaabb">—</span>
         </div>
       </div>
       <!-- Recent payouts -->
       <div id="payout-history" style="display:none;margin-top:12px;padding-top:12px;border-top:1px solid var(--border)">
-        <div style="font-size:12px;color:var(--text-dim);font-weight:600;text-transform:uppercase;letter-spacing:0.5px;margin-bottom:6px">Recent Payouts</div>
+        <div style="font-size:12px;color:var(--text-dim);font-weight:600;text-transform:uppercase;letter-spacing:0.5px;margin-bottom:6px" data-i18n="dash.recent_payouts">Recent Payouts</div>
         <div id="payout-list"></div>
       </div>
 
       <!-- Fee disclaimer -->
       <div style="margin-top:12px;font-size:12px;color:#888;line-height:1.5;padding:10px 12px;background:var(--bg);border-radius:6px">
-        Lightning fees go to the Bitcoin network, not Owlrun. Our fee is always under 10%.
+        <span data-i18n="dash.fee_disclaimer">Lightning fees go to the Bitcoin network, not Owlrun. Our fee is always under 10%.</span>
       </div>
 
       <!-- Advanced: ecash -->
       <div style="margin-top:14px">
         <details>
-          <summary style="cursor:pointer;font-size:14px;color:#aaaabb;user-select:none">&#9656; Advanced: Withdraw as ecash (QR)</summary>
+          <summary style="cursor:pointer;font-size:14px;color:#aaaabb;user-select:none" data-i18n-prefix="&#9656; " data-i18n="dash.ecash_advanced">&#9656; Advanced: Withdraw as ecash (QR)</summary>
           <div style="margin-top:12px;padding:12px;background:var(--bg);border-radius:8px">
             <div class="stat">
-              <span class="stat-label">Local ecash</span>
+              <span class="stat-label" data-i18n="dash.ecash_local">Local ecash</span>
               <span class="stat-value" id="ecash-local-sats" style="color:#f7931a">0 sats</span>
             </div>
             <div class="stat">
-              <span class="stat-label">Proofs</span>
+              <span class="stat-label" data-i18n="dash.ecash_proofs">Proofs</span>
               <span class="stat-value" id="ecash-proof-count">0</span>
             </div>
             <div style="margin-top:8px">
-              <button id="btn-claim" onclick="claimEcash()" style="padding:8px 16px;background:#f7931a;color:#fff;border:none;border-radius:6px;cursor:pointer;font-weight:600;font-size:13px">Claim All</button>
+              <button id="btn-claim" onclick="claimEcash()" style="padding:8px 16px;background:#f7931a;color:#fff;border:none;border-radius:6px;cursor:pointer;font-weight:600;font-size:13px" data-i18n="dash.ecash_claim_all">Claim All</button>
             </div>
             <div id="claim-result" style="display:none;margin-top:10px">
               <textarea id="claim-token" readonly style="width:100%;height:60px;background:var(--bg-card);color:var(--text);border:1px solid var(--border);border-radius:6px;padding:8px;font-size:12px;font-family:monospace;resize:vertical;box-sizing:border-box"></textarea>
               <div style="display:flex;justify-content:space-between;align-items:center;margin-top:4px">
                 <span id="claim-amount" style="font-size:13px;color:#aaaabb"></span>
-                <button onclick="copyToken()" style="padding:4px 10px;background:var(--bg-card-hover);color:var(--text);border:1px solid var(--border-active);border-radius:4px;cursor:pointer;font-size:12px">Copy</button>
+                <button onclick="copyToken()" style="padding:4px 10px;background:var(--bg-card-hover);color:var(--text);border:1px solid var(--border-active);border-radius:4px;cursor:pointer;font-size:12px" data-i18n="dash.ecash_copy">Copy</button>
               </div>
             </div>
             <div id="ecash-token-history" style="margin-top:10px"></div>
@@ -1196,137 +1257,137 @@ const dashboardHTML = `<!DOCTYPE html>
         </details>
       </div>
 
-      <div style="font-size:13px;color:var(--text-dim);margin-top:10px;padding-top:10px;border-top:1px solid var(--border)">
+      <div style="font-size:13px;color:var(--text-dim);margin-top:10px;padding-top:10px;border-top:1px solid var(--border)" data-i18n="dash.wallet_auto_sent">
         Earnings auto-sent to your Lightning wallet. No action needed.
       </div>
     </div>
   </div>
 
-  <!-- ═══ Row 1 right: Status, Earnings, Notifications ═══ -->
+  <!-- ═══ Row 1: Status, Earnings ═══ -->
   <div class="card">
-    <div class="card-title">Status</div>
+    <div class="card-title" data-i18n="dash.status">Status</div>
     <div id="state-badge" class="state-badge">—</div>
     <div class="node-id" id="node-id"></div>
     <div class="node-id" id="provider-key" style="cursor:pointer;user-select:all" title="Click to copy"></div>
     <div style="margin-top:10px;border-top:1px solid var(--border);padding-top:10px">
-      <div id="models-section"></div>
+      <div id="models-summary" style="display:flex;justify-content:space-between;align-items:center;cursor:pointer" onclick="toggleModels()">
+        <span style="font-size:14px;color:var(--text)" id="models-summary-text"></span>
+        <span id="models-arrow" style="font-size:12px;color:var(--text-muted);transition:transform .2s">&#9660;</span>
+      </div>
+      <div id="models-section" style="display:none;margin-top:8px"></div>
     </div>
     <div style="margin-top:8px;padding-top:8px;border-top:1px solid var(--border);display:flex;flex-wrap:wrap;gap:3px 0">
-      <span class="legend-row"><span class="dot dot-green"></span>Earning</span>
-      <span class="legend-row"><span class="dot dot-yellow"></span>Ready</span>
-      <span class="legend-row"><span class="dot dot-blue"></span>No wallet</span>
-      <span class="legend-row"><span class="dot dot-red"></span>Error</span>
-      <span class="legend-row"><span class="dot dot-grey"></span>Paused</span>
+      <span class="legend-row"><span class="dot dot-green"></span><span data-i18n="dash.legend.earning">Earning</span></span>
+      <span class="legend-row"><span class="dot dot-yellow"></span><span data-i18n="dash.legend.ready">Ready</span></span>
+      <span class="legend-row"><span class="dot dot-blue"></span><span data-i18n="dash.legend.no_wallet">No wallet</span></span>
+      <span class="legend-row"><span class="dot dot-red"></span><span data-i18n="dash.legend.error">Error</span></span>
+      <span class="legend-row"><span class="dot dot-grey"></span><span data-i18n="dash.legend.paused">Paused</span></span>
     </div>
   </div>
 
   <div class="card">
-    <div class="card-title">Earnings</div>
+    <div class="card-title" data-i18n="dash.earnings">Earnings</div>
     <div class="earnings-big" id="total-sats">0 sats</div>
     <div style="font-size:18px;color:var(--text-dim);font-variant-numeric:tabular-nums;margin-top:2px" id="total-usd">~$0.00</div>
     <div style="margin-top:14px;padding-top:12px;border-top:1px solid var(--border)">
       <div class="stat">
-        <span class="stat-label" style="font-size:17px">Today</span>
+        <span class="stat-label" style="font-size:17px" data-i18n="dash.today">Today</span>
         <span class="stat-value" id="today-sats" style="color:var(--green);font-size:20px;font-weight:700">0 sats</span>
       </div>
       <div style="text-align:right;margin-top:2px">
         <span id="today-usd" style="font-size:14px;color:var(--text-muted)">~$0.00</span>
       </div>
     </div>
-    <div style="margin-top:12px;font-size:12px;color:var(--text-muted);opacity:0.7">USD approximated at live BTC rate</div>
+    <div style="margin-top:12px;font-size:12px;color:var(--text-muted);opacity:0.7" data-i18n="dash.usd_disclaimer">USD approximated at live BTC rate</div>
   </div>
 
+  <!-- ═══ Row 2: Gateway, BTC Price ═══ -->
   <div class="card">
-    <div class="card-title">Bitcoin Price</div>
+    <div class="card-title" data-i18n="dash.gw">Gateway</div>
     <div class="stat">
-      <span class="stat-label">Live</span>
-      <span class="stat-value" id="btc-live">—</span>
-    </div>
-    <div class="stat">
-      <span class="stat-label">Yesterday's Fix</span>
-      <span class="stat-value" id="btc-owlrun">—</span>
-    </div>
-    <div class="stat">
-      <span class="stat-label">24h Avg</span>
-      <span class="stat-value" id="btc-daily">—</span>
-    </div>
-    <div class="stat">
-      <span class="stat-label">7d Avg</span>
-      <span class="stat-value" id="btc-weekly">—</span>
-    </div>
-    <div class="stat">
-      <span class="stat-label">Status</span>
-      <span class="stat-value" id="btc-status">—</span>
-    </div>
-  </div>
-
-  <!-- ═══ Row 2 right: Gateway, GPU, Disk ═══ -->
-  <div class="card">
-    <div class="card-title">Gateway</div>
-    <div class="stat">
-      <span class="stat-label">Connection</span>
+      <span class="stat-label" data-i18n="dash.gw_connection">Connection</span>
       <span class="stat-value" id="gw-connected">—</span>
     </div>
     <div class="stat">
-      <span class="stat-label">Jobs today</span>
+      <span class="stat-label" data-i18n="dash.gw_jobs_today">Jobs today</span>
       <span class="stat-value" id="gw-jobs">—</span>
     </div>
     <div class="stat">
-      <span class="stat-label">Tokens today</span>
+      <span class="stat-label" data-i18n="dash.gw_tokens_today">Tokens today</span>
       <span class="stat-value" id="gw-tokens">—</span>
     </div>
     <div class="stat">
-      <span class="stat-label">Queue depth</span>
+      <span class="stat-label" data-i18n="dash.gw_queue">Queue depth</span>
       <span class="stat-value" id="gw-queue">—</span>
     </div>
   </div>
 
   <div class="card">
-    <div class="card-title">GPU</div>
+    <div class="card-title" data-i18n="dash.btc_price">Bitcoin Price</div>
+    <div class="stat">
+      <span class="stat-label" data-i18n="dash.btc_live">Live</span>
+      <span class="stat-value" id="btc-live">—</span>
+    </div>
+    <div class="stat">
+      <span class="stat-label" data-i18n="dash.btc_yesterday">Yesterday's Fix</span>
+      <span class="stat-value" id="btc-owlrun">—</span>
+    </div>
+    <div class="stat">
+      <span class="stat-label" data-i18n="dash.btc_24h">24h Avg</span>
+      <span class="stat-value" id="btc-daily">—</span>
+    </div>
+    <div class="stat">
+      <span class="stat-label" data-i18n="dash.btc_7d">7d Avg</span>
+      <span class="stat-value" id="btc-weekly">—</span>
+    </div>
+    <div class="stat">
+      <span class="stat-label" data-i18n="dash.btc_status">Status</span>
+      <span class="stat-value" id="btc-status">—</span>
+    </div>
+  </div>
+
+  <div class="card">
+    <div class="card-title" data-i18n="dash.gpu">GPU</div>
     <div class="stat"><span class="stat-label" id="gpu-name" style="color:#d0d0e0;font-size:15px"></span></div>
     <div class="stat">
-      <span class="stat-label">Utilisation</span>
+      <span class="stat-label" data-i18n="dash.gpu_util">Utilisation</span>
       <span class="stat-value" style="display:flex;align-items:center;gap:8px">
         <span id="util-pct">—</span>
         <div class="bar-wrap"><div class="bar-fill bar-green" id="util-bar" style="width:0%"></div></div>
       </span>
     </div>
     <div class="stat">
-      <span class="stat-label">VRAM free</span>
+      <span class="stat-label" data-i18n="dash.gpu_vram">VRAM free</span>
       <span class="stat-value" id="vram-free">—</span>
     </div>
     <div class="stat">
-      <span class="stat-label">Temperature</span>
+      <span class="stat-label" data-i18n="dash.gpu_temp">Temperature</span>
       <span class="stat-value" id="temp">—</span>
     </div>
     <div class="stat">
-      <span class="stat-label">Power draw</span>
+      <span class="stat-label" data-i18n="dash.gpu_power">Power draw</span>
       <span class="stat-value" id="power">—</span>
     </div>
   </div>
 
   <div class="card">
-    <div class="card-title">Disk</div>
+    <div class="card-title" data-i18n="dash.disk">Disk</div>
     <div class="stat">
-      <span class="stat-label">Free</span>
+      <span class="stat-label" data-i18n="dash.disk_free">Free</span>
       <span class="stat-value" style="display:flex;align-items:center;gap:8px">
         <span id="disk-free">—</span>
         <div class="bar-wrap"><div class="bar-fill bar-green" id="disk-bar" style="width:0%"></div></div>
       </span>
     </div>
     <div class="stat">
-      <span class="stat-label">Total</span>
+      <span class="stat-label" data-i18n="dash.disk_total">Total</span>
       <span class="stat-value" id="disk-total">—</span>
     </div>
     <div class="stat">
-      <span class="stat-label">Path</span>
+      <span class="stat-label" data-i18n="dash.disk_path">Path</span>
       <span class="stat-value" style="font-size:14px;color:#aaaabb;max-width:180px;text-align:right;word-break:break-all" id="disk-path">—</span>
     </div>
   </div>
-
-</div>
-
-
 
 </div>
 
@@ -1339,11 +1400,11 @@ const dashboardHTML = `<!DOCTYPE html>
   </div>
   <div class="chart-grid">
     <div class="chart-card">
-      <div class="card-title">Jobs</div>
+      <div class="card-title" data-i18n="dash.charts_jobs">Jobs</div>
       <div style="position:relative;height:220px"><canvas id="chart-jobs"></canvas></div>
     </div>
     <div class="chart-card">
-      <div class="card-title">Earnings (USD)</div>
+      <div class="card-title" data-i18n="dash.charts_earnings">Earnings (USD)</div>
       <div style="position:relative;height:220px"><canvas id="chart-earnings"></canvas></div>
     </div>
   </div>
@@ -1364,6 +1425,106 @@ function toggleTheme() {
   if (saved) document.documentElement.setAttribute('data-theme', saved);
 })();
 
+// ── i18n ────────────────────────────────────────────────────────────
+var _i18n = {};
+var _i18nLang = localStorage.getItem('owlrun-lang') || navigator.language || 'en';
+
+function t(key) {
+  return _i18n[key] || key;
+}
+
+function applyI18n() {
+  document.querySelectorAll('[data-i18n]').forEach(function(el) {
+    var key = el.getAttribute('data-i18n');
+    var val = t(key);
+    if (val !== key) {
+      if (el.tagName === 'TITLE') { document.title = val; }
+      else if (el.tagName === 'INPUT' && el.placeholder) { el.placeholder = val; }
+      else { el.textContent = val; }
+    }
+  });
+}
+
+function switchLang(lang) {
+  _i18nLang = lang;
+  localStorage.setItem('owlrun-lang', lang);
+  loadLocale(lang);
+}
+
+function loadLocale(lang) {
+  fetch('/api/locale?lang=' + encodeURIComponent(lang))
+    .then(function(r) { return r.json(); })
+    .then(function(msgs) { _i18n = msgs; applyI18n(); })
+    .catch(function() {});
+}
+
+function loadLocaleList() {
+  fetch('/api/locales')
+    .then(function(r) { return r.json(); })
+    .then(function(locales) {
+      var sel = document.getElementById('lang-select');
+      if (!sel) return;
+      sel.innerHTML = '';
+      var shortLang = _i18nLang.split('-')[0].split('_')[0].toLowerCase();
+      locales.forEach(function(loc) {
+        var opt = document.createElement('option');
+        opt.value = loc.code;
+        opt.textContent = loc.name;
+        if (loc.code === shortLang) opt.selected = true;
+        sel.appendChild(opt);
+      });
+    })
+    .catch(function() {});
+}
+
+// Load locale on startup
+loadLocaleList();
+loadLocale(_i18nLang);
+
+function toggleNotifications() {
+  var bc = document.getElementById('broadcasts');
+  var arrow = document.getElementById('notify-arrow');
+  var open = bc.style.display !== 'none';
+  bc.style.display = open ? 'none' : '';
+  arrow.style.transform = open ? '' : 'rotate(180deg)';
+  localStorage.setItem('owlrun-notify-open', open ? '' : '1');
+}
+(function() {
+  if (localStorage.getItem('owlrun-notify-open') === '1') {
+    document.getElementById('broadcasts').style.display = '';
+    document.getElementById('notify-arrow').style.transform = 'rotate(180deg)';
+  }
+})();
+
+function showCfgTab(name) {
+  document.querySelectorAll('.cfg-panel').forEach(function(p) { p.style.display = 'none'; });
+  document.querySelectorAll('.cfg-tab').forEach(function(t) { t.classList.remove('active'); });
+  var panel = document.getElementById('cfg-' + name);
+  var tab = document.querySelector('.cfg-tab[data-cfg="' + name + '"]');
+  if (panel) panel.style.display = '';
+  if (tab) tab.classList.add('active');
+}
+
+function toggleModels() {
+  var ms = document.getElementById('models-section');
+  var arrow = document.getElementById('models-arrow');
+  var open = ms.style.display !== 'none';
+  ms.style.display = open ? 'none' : '';
+  arrow.style.transform = open ? '' : 'rotate(180deg)';
+  localStorage.setItem('owlrun-models-open', open ? '' : '1');
+}
+(function() {
+  if (localStorage.getItem('owlrun-models-open') === '1') {
+    document.getElementById('models-section').style.display = '';
+    document.getElementById('models-arrow').style.transform = 'rotate(180deg)';
+  }
+})();
+
+function dismissWalletBanner() {
+  document.getElementById('wallet-warn').style.display = 'none';
+  localStorage.setItem('owlrun-wallet-banner-dismissed', '1');
+}
+
 function escapeHtml(s) { var d = document.createElement('div'); d.textContent = s; return d.innerHTML; }
 function fmt2(n) {
   if (n < 0.01) return '$' + n.toFixed(6);
@@ -1375,12 +1536,12 @@ function fmtMB(mb) { return mb > 1024 ? fmtGB(mb) : mb + ' MB'; }
 
 function stateDisplay(state) {
   switch(state) {
-    case 'earning': return ['dot-green',  'Connected & earning'];
-    case 'ready':   return ['dot-yellow', 'Getting ready'];
-    case 'idle':    return ['dot-yellow', 'Idle — waiting'];
-    case 'wallet':  return ['dot-blue',   'Wallet not set'];
-    case 'error':   return ['dot-red',    'Error'];
-    case 'paused':  return ['dot-grey',   'Paused'];
+    case 'earning': return ['dot-green',  t('dash.state.earning')];
+    case 'ready':   return ['dot-yellow', t('dash.state.ready')];
+    case 'idle':    return ['dot-yellow', t('dash.state.idle')];
+    case 'wallet':  return ['dot-blue',   t('dash.state.wallet')];
+    case 'error':   return ['dot-red',    t('dash.state.error')];
+    case 'paused':  return ['dot-grey',   t('dash.state.paused')];
     default:        return ['dot-grey',   state];
   }
 }
@@ -1415,16 +1576,19 @@ function update(d) {
   // Wallet warning / configured banner
   var ww = document.getElementById('wallet-warn');
   var wwTitle = ww.querySelector('.warn-title');
+  var wwClose = document.getElementById('wallet-warn-close');
   if (d.wallet && d.wallet.warning) {
-    wwTitle.textContent = 'Wallet not configured';
+    wwTitle.textContent = t('dash.wallet_not_configured');
     document.getElementById('wallet-warn-body').innerHTML = d.wallet.warning;
     ww.classList.remove('configured');
     ww.style.display = 'block';
+    wwClose.style.display = 'none';
   } else if (d.wallet && d.wallet.configured) {
-    wwTitle.textContent = '\u26a1 Wallet configured';
-    document.getElementById('wallet-warn-body').textContent = d.wallet.configured;
+    wwTitle.textContent = t('dash.wallet_configured_banner');
+    document.getElementById('wallet-warn-body').textContent = t('tray.wallet_configured_fmt').replace('%s', d.wallet.configured);
     ww.classList.add('configured');
-    ww.style.display = 'block';
+    wwClose.style.display = '';
+    if (!localStorage.getItem('owlrun-wallet-banner-dismissed')) ww.style.display = 'block';
   } else { ww.classList.remove('configured'); ww.style.display = 'none'; }
 
   const [dotClass, label] = stateDisplay(d.state);
@@ -1453,7 +1617,7 @@ function update(d) {
   document.getElementById('today-usd').textContent = '~' + fmt2(d.earnings.today_usd);
 
   const g = d.gpu;
-  document.getElementById('gpu-name').textContent  = g.name || 'No GPU detected';
+  document.getElementById('gpu-name').textContent  = g.name || t('dash.gpu_none');
   document.getElementById('util-pct').textContent  = g.util_pct + '%';
   document.getElementById('util-bar').style.width  = g.util_pct + '%';
   document.getElementById('vram-free').textContent = fmtMB(g.vram_free_mb);
@@ -1465,10 +1629,12 @@ function update(d) {
 
   // Model picker — interactive
   var ms = document.getElementById('models-section');
+  var msSummary = document.getElementById('models-summary-text');
   var avail = d.available_models || [];
   var pulling = d.pulling || false;
   if (avail.length === 0) {
-    ms.innerHTML = '<div class="stat"><span class="stat-label">Model</span><span class="stat-value">—</span></div>';
+    msSummary.textContent = t('dash.model') + ': —';
+    ms.innerHTML = '';
   } else {
     // Split into fits vs slow, sort: fits first (installed first within each group)
     var fitsModels = avail.filter(function(m) { return m.fits; });
@@ -1476,9 +1642,15 @@ function update(d) {
     fitsModels.sort(function(a,b) { return (b.installed?1:0) - (a.installed?1:0) || (b.active?1:0) - (a.active?1:0); });
     slowModels.sort(function(a,b) { return (b.installed?1:0) - (a.installed?1:0); });
 
-    var diskInfo = d.disk ? d.disk.free_gb.toFixed(1) + ' GB free' : '';
-    var html = '<div style="font-size:11px;color:var(--text-muted);margin-bottom:6px;display:flex;justify-content:space-between"><span>Models</span><span>' + diskInfo + '</span></div>';
-    if (pulling) html += '<div id="pull-progress" style="margin-bottom:8px;padding:8px 10px;border:1px solid #f7931a;border-radius:8px;background:var(--wallet-warn-bg);font-size:12px;color:var(--accent)"><span class="spinner"></span> Downloading…</div>';
+    // Models summary (always visible)
+    var activeModel = avail.filter(function(m) { return m.active; });
+    var installedCount = avail.filter(function(m) { return m.installed; }).length;
+    var activeName = activeModel.length > 0 ? activeModel[0].tag : '—';
+    msSummary.innerHTML = '<span style="color:var(--green);font-weight:600">' + escapeHtml(activeName) + '</span> <span style="font-size:12px;color:var(--text-muted)">(' + installedCount + ' ' + t('dash.models').toLowerCase() + ')</span>';
+
+    var diskInfo = d.disk ? d.disk.free_gb.toFixed(1) + ' GB' : '';
+    var html = '<div style="font-size:11px;color:var(--text-muted);margin-bottom:6px;display:flex;justify-content:space-between"><span>' + t('dash.models') + '</span><span>' + diskInfo + '</span></div>';
+    if (pulling) html += '<div id="pull-progress" style="margin-bottom:8px;padding:8px 10px;border:1px solid #f7931a;border-radius:8px;background:var(--wallet-warn-bg);font-size:12px;color:var(--accent)"><span class="spinner"></span> ' + t('dash.downloading') + '</div>';
 
     var registeredModels = d.models || [];
     function renderModelCard(m) {
@@ -1500,20 +1672,20 @@ function update(d) {
       h += '</div></div>';
       // Action buttons + badges
       if (isActive) {
-        h += '<span style="font-size:9px;background:#4ade80;color:#000;padding:2px 6px;border-radius:4px;font-weight:700;flex-shrink:0">ACTIVE</span>';
+        h += '<span style="font-size:9px;background:#4ade80;color:#000;padding:2px 6px;border-radius:4px;font-weight:700;flex-shrink:0">' + t('dash.model_active') + '</span>';
       } else if (isRegistered && m.installed && !pulling) {
         h += '<div style="display:flex;gap:4px;align-items:center;flex-shrink:0">';
-        h += '<span style="font-size:9px;background:#22c55e33;color:#4ade80;padding:2px 6px;border-radius:4px;font-weight:600">AVAILABLE</span>';
-        h += '<button onclick="switchModel(\'' + escapeHtml(m.tag) + '\')" style="font-size:10px;background:var(--bg-card-hover);color:var(--text);border:1px solid var(--border-active);border-radius:4px;padding:2px 8px;cursor:pointer">Activate</button>';
-        h += '<button onclick="removeModel(\'' + escapeHtml(m.tag) + '\')" style="font-size:10px;background:var(--bg);color:#ef4444;border:1px solid #ef444444;border-radius:4px;padding:2px 6px;cursor:pointer" title="Remove model">✕</button>';
+        h += '<span style="font-size:9px;background:#22c55e33;color:#4ade80;padding:2px 6px;border-radius:4px;font-weight:600">' + t('dash.model_available') + '</span>';
+        h += '<button onclick="switchModel(\'' + escapeHtml(m.tag) + '\')" style="font-size:10px;background:var(--bg-card-hover);color:var(--text);border:1px solid var(--border-active);border-radius:4px;padding:2px 8px;cursor:pointer">' + t('dash.model_activate') + '</button>';
+        h += '<button onclick="removeModel(\'' + escapeHtml(m.tag) + '\')" style="font-size:10px;background:var(--bg);color:#ef4444;border:1px solid #ef444444;border-radius:4px;padding:2px 6px;cursor:pointer" title="' + t('dash.model_remove') + '">✕</button>';
         h += '</div>';
       } else if (m.installed && !pulling) {
         h += '<div style="display:flex;gap:4px;flex-shrink:0">';
-        h += '<button onclick="switchModel(\'' + escapeHtml(m.tag) + '\')" style="font-size:10px;background:var(--bg-card-hover);color:var(--text);border:1px solid var(--border-active);border-radius:4px;padding:2px 8px;cursor:pointer">Activate</button>';
-        h += '<button onclick="removeModel(\'' + escapeHtml(m.tag) + '\')" style="font-size:10px;background:var(--bg);color:#ef4444;border:1px solid #ef444444;border-radius:4px;padding:2px 6px;cursor:pointer" title="Remove model">✕</button>';
+        h += '<button onclick="switchModel(\'' + escapeHtml(m.tag) + '\')" style="font-size:10px;background:var(--bg-card-hover);color:var(--text);border:1px solid var(--border-active);border-radius:4px;padding:2px 8px;cursor:pointer">' + t('dash.model_activate') + '</button>';
+        h += '<button onclick="removeModel(\'' + escapeHtml(m.tag) + '\')" style="font-size:10px;background:var(--bg);color:#ef4444;border:1px solid #ef444444;border-radius:4px;padding:2px 6px;cursor:pointer" title="' + t('dash.model_remove') + '">✕</button>';
         h += '</div>';
       } else if (!m.installed && !pulling) {
-        h += '<button id="dl-' + escapeHtml(m.tag).replace(/[:.]/g,'_') + '" onclick="pullModel(\'' + escapeHtml(m.tag) + '\',' + m.vram_gb + ')" style="font-size:10px;background:var(--bg);color:var(--accent);border:1px solid rgba(245,158,11,0.27);border-radius:4px;padding:2px 8px;cursor:pointer;flex-shrink:0">Download</button>';
+        h += '<button id="dl-' + escapeHtml(m.tag).replace(/[:.]/g,'_') + '" onclick="pullModel(\'' + escapeHtml(m.tag) + '\',' + m.vram_gb + ')" style="font-size:10px;background:var(--bg);color:var(--accent);border:1px solid rgba(245,158,11,0.27);border-radius:4px;padding:2px 8px;cursor:pointer;flex-shrink:0">' + t('dash.model_download') + '</button>';
       } else {
         h += '<span style="font-size:10px;color:var(--text-muted);flex-shrink:0"><span class="spinner"></span></span>';
       }
@@ -1529,7 +1701,7 @@ function update(d) {
       var slowChecked = showSlow ? showSlow.checked : false;
       html += '<label style="display:flex;align-items:center;gap:6px;font-size:11px;color:var(--text-muted);margin:8px 0 4px;cursor:pointer">';
       html += '<input type="checkbox" id="show-slow-check" onchange="poll()" ' + (slowChecked ? 'checked' : '') + ' style="accent-color:var(--accent)">';
-      html += 'Show ' + slowModels.length + ' larger models (may be slow on this machine)</label>';
+      html += t('dash.show_slow_fmt').replace('%d', slowModels.length) + '</label>';
       if (slowChecked) {
         slowModels.forEach(function(m) { html += renderModelCard(m); });
       }
@@ -1540,7 +1712,7 @@ function update(d) {
 
   const gw = d.gateway;
   const connEl = document.getElementById('gw-connected');
-  connEl.textContent = gw.connected ? 'Connected' : 'Disconnected';
+  connEl.textContent = gw.connected ? t('dash.gw_connected') : t('dash.gw_disconnected');
   connEl.className = 'stat-value ' + (gw.connected ? 'connected' : 'disconnected');
   document.getElementById('gw-jobs').textContent   = gw.jobs_today;
   document.getElementById('gw-tokens').textContent = gw.tokens_today.toLocaleString();
@@ -1654,7 +1826,7 @@ function update(d) {
     // Token history
     var histEl = document.getElementById('ecash-token-history');
     if (sw.token_history && sw.token_history.length > 0) {
-      histEl.innerHTML = '<div style="font-size:13px;color:#aaaabb;margin-bottom:6px">Recent tokens:</div>' +
+      histEl.innerHTML = '<div style="font-size:13px;color:#aaaabb;margin-bottom:6px">' + t('dash.ecash_recent') + '</div>' +
         sw.token_history.slice(0, 5).map(function(t) {
           return '<div style="font-size:12px;color:var(--text-muted);margin-bottom:4px;word-break:break-all">' +
             fmtSats(t.sats) + ' — ' + new Date(t.claimed_at).toLocaleString() + '</div>';
@@ -1676,7 +1848,7 @@ function update(d) {
       var n = document.createElement('div');
       n.id = 'btc-inactive-notice';
       n.style.cssText = 'color:var(--text-muted);font-size:14px;font-style:italic;padding:8px 0;text-align:center';
-      n.textContent = 'Bitcoin payments not yet active on this gateway';
+      n.textContent = t('dash.btc_inactive');
       btcCard.querySelectorAll('.stat').forEach(function(s) { s.style.display = 'none'; });
       btcCard.appendChild(n);
     }
@@ -1693,7 +1865,10 @@ function update(d) {
 
   // Broadcasts
   var bcEl = document.getElementById('broadcasts');
+  var notifyBadge = document.getElementById('notify-badge');
   if (d.broadcasts && d.broadcasts.length > 0) {
+    notifyBadge.textContent = d.broadcasts.length;
+    notifyBadge.style.display = '';
     var sorted = d.broadcasts.slice().sort(function(a, b) { return b.timestamp.localeCompare(a.timestamp); });
     bcEl.innerHTML = sorted.map(function(b) {
       var t = new Date(b.timestamp);
@@ -1702,10 +1877,11 @@ function update(d) {
       return '<div class="broadcast-item"><span class="broadcast-msg">' + title + escapeHtml(b.message) + '</span><span class="broadcast-time">' + ts + '</span></div>';
     }).join('');
   } else {
-    bcEl.innerHTML = '<div class="broadcast-empty">Broadcast notifications from the gateway will appear here.</div>';
+    bcEl.innerHTML = '<div class="broadcast-empty">' + escapeHtml(t('dash.broadcasts_empty')) + '</div>';
+    notifyBadge.style.display = 'none';
   }
 
-  document.getElementById('updated').textContent = 'updated ' + new Date().toLocaleTimeString();
+  document.getElementById('updated').textContent = t('dash.updated_fmt').replace('%s', new Date().toLocaleTimeString());
 }
 
 async function saveLightningAddress() {
@@ -1713,19 +1889,19 @@ async function saveLightningAddress() {
   var errEl = document.getElementById('ln-save-error');
   errEl.style.display = 'none';
   if (!addr || !addr.includes('@')) {
-    errEl.textContent = 'Enter a valid Lightning address (e.g. yourname@minibits.cash)';
+    errEl.textContent = t('dash.wallet_valid_error');
     errEl.style.display = '';
     return;
   }
   var btn = document.getElementById('btn-save-ln');
-  btn.disabled = true; btn.textContent = 'Saving...';
+  btn.disabled = true; btn.textContent = t('dash.wallet_saving');
   try {
     var r = await fetch('/api/set-lightning-address', {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({address:addr})});
     var data = await r.json();
     if (data.error) { errEl.textContent = data.error; errEl.style.display = ''; return; }
     poll(); // refresh immediately
   } catch(e) { errEl.textContent = 'Failed: ' + e.message; errEl.style.display = ''; }
-  finally { btn.disabled = false; btn.textContent = 'Save & Start Earning'; }
+  finally { btn.disabled = false; btn.textContent = t('dash.wallet_save_btn'); }
 }
 
 async function saveLightningAddressEdit() {
@@ -1733,7 +1909,7 @@ async function saveLightningAddressEdit() {
   var errEl = document.getElementById('ln-edit-error');
   errEl.style.display = 'none';
   if (!addr || !addr.includes('@')) {
-    errEl.textContent = 'Enter a valid Lightning address';
+    errEl.textContent = t('dash.wallet_valid_error_short');
     errEl.style.display = '';
     return;
   }
@@ -1799,7 +1975,7 @@ async function setJobMode(mode) {
 
 function applyJobModeUI(mode) {
   var btns = {always: document.getElementById('jm-always'), idle: document.getElementById('jm-idle'), never: document.getElementById('jm-never')};
-  var hints = {always: 'Earning whenever connected', idle: 'Earning only when you are away', never: 'Not accepting any jobs'};
+  var hints = {always: t('dash.job_hint_always'), idle: t('dash.job_hint_idle'), never: t('dash.job_hint_never')};
   for (var k in btns) {
     if (k === mode) {
       btns[k].style.background = '#f7931a';
@@ -1844,23 +2020,23 @@ async function poll() {
     const r = await fetch('/api/status');
     update(await r.json());
   } catch(e) {
-    document.getElementById('updated').textContent = 'connection lost…';
+    document.getElementById('updated').textContent = t('dash.connection_lost');
   }
   fetchHistory();
 }
 
 async function claimEcash() {
   var btn = document.getElementById('btn-claim');
-  btn.disabled = true; btn.textContent = 'Claiming…';
+  btn.disabled = true; btn.textContent = t('dash.ecash_claiming');
   try {
     var r = await fetch('/api/claim-ecash', {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({amount_sats:0})});
     var data = await r.json();
-    if (data.error) { alert('Claim failed: ' + data.error); return; }
+    if (data.error) { alert(t('dash.ecash_claim_failed_fmt').replace('%s', data.error)); return; }
     document.getElementById('claim-token').value = data.token;
     document.getElementById('claim-amount').textContent = data.amount_sats ? Math.round(data.amount_sats/1000).toLocaleString() + ' sats claimed' : '';
     document.getElementById('claim-result').style.display = '';
-  } catch(e) { alert('Claim failed: ' + e.message); }
-  finally { btn.disabled = false; btn.textContent = 'Claim All'; }
+  } catch(e) { alert(t('dash.ecash_claim_failed_fmt').replace('%s', e.message)); }
+  finally { btn.disabled = false; btn.textContent = t('dash.ecash_claim_all'); }
 }
 
 async function exportToken() {
@@ -1870,9 +2046,9 @@ async function exportToken() {
     var r = await fetch('/api/status');
     var d = await r.json();
     if (d.sats_wallet && d.sats_wallet.local_sats > 0) {
-      alert('Export is available after claiming. Use Claim All first, then copy the token.');
+      alert(t('dash.ecash_export_hint'));
     } else {
-      alert('No local proofs to export.');
+      alert(t('dash.ecash_no_proofs'));
     }
   } finally { btn.disabled = false; }
 }
@@ -1880,8 +2056,8 @@ async function exportToken() {
 function copyToken() {
   var ta = document.getElementById('claim-token');
   ta.select(); document.execCommand('copy');
-  var btn = event.target; btn.textContent = 'Copied!';
-  setTimeout(function() { btn.textContent = 'Copy'; }, 1500);
+  var btn = event.target; btn.textContent = t('dash.ecash_copied');
+  setTimeout(function() { btn.textContent = t('dash.ecash_copy'); }, 1500);
 }
 
 // ── Charts ──────────────────────────────────────────────────────────
@@ -1927,16 +2103,16 @@ function initCharts() {
   jobsChart = new Chart(document.getElementById('chart-jobs').getContext('2d'), {
     type: 'line',
     data: { labels: [], datasets: [
-      { label: 'Per period', data: [], borderColor: '#eab308', backgroundColor: '#eab30833', borderWidth: 2, pointRadius: 2, tension: 0.3, fill: true, yAxisID: 'y' },
-      { label: 'Cumulative', data: [], borderColor: '#3b82f6', backgroundColor: 'transparent', borderWidth: 2, pointRadius: 1, borderDash: [4,3], tension: 0.3, yAxisID: 'y1' }
+      { label: t('dash.charts_per_period'), data: [], borderColor: '#eab308', backgroundColor: '#eab30833', borderWidth: 2, pointRadius: 2, tension: 0.3, fill: true, yAxisID: 'y' },
+      { label: t('dash.charts_cumulative'), data: [], borderColor: '#3b82f6', backgroundColor: 'transparent', borderWidth: 2, pointRadius: 1, borderDash: [4,3], tension: 0.3, yAxisID: 'y1' }
     ] },
     options: makeChartOpts()
   });
   earningsChart = new Chart(document.getElementById('chart-earnings').getContext('2d'), {
     type: 'line',
     data: { labels: [], datasets: [
-      { label: 'Per period', data: [], borderColor: '#22c55e', backgroundColor: '#22c55e33', borderWidth: 2, pointRadius: 2, tension: 0.3, fill: true, yAxisID: 'y' },
-      { label: 'Cumulative', data: [], borderColor: '#f59e0b', backgroundColor: 'transparent', borderWidth: 2, pointRadius: 1, borderDash: [4,3], tension: 0.3, yAxisID: 'y1' }
+      { label: t('dash.charts_per_period'), data: [], borderColor: '#22c55e', backgroundColor: '#22c55e33', borderWidth: 2, pointRadius: 2, tension: 0.3, fill: true, yAxisID: 'y' },
+      { label: t('dash.charts_cumulative'), data: [], borderColor: '#f59e0b', backgroundColor: 'transparent', borderWidth: 2, pointRadius: 1, borderDash: [4,3], tension: 0.3, yAxisID: 'y1' }
     ] },
     options: makeChartOpts(smartUsd)
   });
@@ -1978,7 +2154,7 @@ poll();
 setInterval(poll, 5000);
 
 async function removeModel(tag) {
-  if (!confirm('Remove ' + tag + '?\n\nThis will delete the model from disk and free up space.\nYou can re-download it later.')) return;
+  if (!confirm(t('dash.confirm_remove_title').replace('%s', tag) + '\n\n' + t('dash.confirm_remove_body'))) return;
   try {
     var resp = await fetch('/api/remove-model', {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({model:tag})});
     var data = await resp.json();
@@ -1988,7 +2164,7 @@ async function removeModel(tag) {
 }
 
 async function switchModel(tag) {
-  if (!confirm('Switch active model to ' + tag + '?\n\nThis will reload the model into memory and re-register with the gateway.')) return;
+  if (!confirm(t('dash.confirm_switch_title').replace('%s', tag) + '\n\n' + t('dash.confirm_switch_body'))) return;
   try {
     var resp = await fetch('/api/switch-model', {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({model:tag})});
     var data = await resp.json();
@@ -2001,7 +2177,7 @@ async function pullModel(tag, vramGb) {
   // Show spinner on download button while checking size
   var btnId = 'dl-' + tag.replace(/[:.]/g, '_');
   var dlBtn = document.getElementById(btnId);
-  if (dlBtn) { dlBtn.disabled = true; dlBtn.innerHTML = '<span class="spinner"></span> Checking…'; }
+  if (dlBtn) { dlBtn.disabled = true; dlBtn.innerHTML = '<span class="spinner"></span> ' + t('dash.download_checking'); }
 
   var st = await (await fetch('/api/status')).json();
   var diskFree = st.disk ? st.disk.free_gb : 0;
@@ -2015,7 +2191,7 @@ async function pullModel(tag, vramGb) {
     var sizeData = await sizeResp.json();
     if (sizeData.size_mb > 0) { sizeMb = sizeData.size_mb; sizeSource = 'registry'; }
   } catch(e) {}
-  if (dlBtn) { dlBtn.disabled = false; dlBtn.textContent = 'Download'; }
+  if (dlBtn) { dlBtn.disabled = false; dlBtn.textContent = t('dash.model_download'); }
 
   // Step 2: Fallback estimate if registry failed
   if (sizeMb === 0) {
@@ -2029,20 +2205,19 @@ async function pullModel(tag, vramGb) {
 
   // Step 3: Abort if would exceed 90% disk usage
   if (usagePct > 90) {
-    alert('Not enough disk space!\n\n' +
-      'Model size: ~' + sizeGb + ' GB' + (sizeSource === 'estimate' ? ' (estimated)' : '') + '\n' +
-      'Disk free: ' + diskFree.toFixed(1) + ' GB / ' + diskTotal.toFixed(0) + ' GB total\n' +
-      'After download: ' + usagePct.toFixed(0) + '% used\n\n' +
-      'Download aborted — disk usage would exceed 90%.\n' +
-      'Free up space or remove unused models first.');
+    alert(t('dash.download_no_space_title') + '\n\n' +
+      (sizeSource === 'estimate' ? t('dash.download_size_est_fmt') : t('dash.download_size_fmt')).replace('%s', sizeGb) + '\n' +
+      t('dash.download_disk_fmt').replace('%s', diskFree.toFixed(1)).replace('%s', diskTotal.toFixed(0)) + '\n' +
+      t('dash.download_after_fmt').replace('%s', usagePct.toFixed(0)) + '\n\n' +
+      t('dash.download_no_space_body'));
     return;
   }
 
-  if (!confirm('Download ' + tag + '?\n\n' +
-    'Model size: ~' + sizeGb + ' GB' + (sizeSource === 'estimate' ? ' (estimated)' : '') + '\n' +
-    'Disk free: ' + diskFree.toFixed(1) + ' GB / ' + diskTotal.toFixed(0) + ' GB total\n' +
-    'After download: ~' + usagePct.toFixed(0) + '% used\n\n' +
-    'This may take a few minutes depending on your connection.')) return;
+  if (!confirm(t('dash.confirm_download_title').replace('%s', tag) + '\n\n' +
+    (sizeSource === 'estimate' ? t('dash.download_size_est_fmt') : t('dash.download_size_fmt')).replace('%s', sizeGb) + '\n' +
+    t('dash.download_disk_fmt').replace('%s', diskFree.toFixed(1)).replace('%s', diskTotal.toFixed(0)) + '\n' +
+    t('dash.download_after_fmt').replace('%s', usagePct.toFixed(0)) + '\n\n' +
+    t('dash.download_time_hint'))) return;
 
   // Show progress in the models section
   var progDiv = document.getElementById('pull-progress');
@@ -2053,7 +2228,7 @@ async function pullModel(tag, vramGb) {
     var ms = document.getElementById('models-section');
     ms.insertBefore(progDiv, ms.children[1]);
   }
-  progDiv.innerHTML = '<span class="spinner"></span> Starting download…';
+  progDiv.innerHTML = '<span class="spinner"></span> ' + t('dash.download_starting');
 
   try {
     var resp = await fetch('/api/pull-model', {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({model:tag})});
@@ -2077,7 +2252,7 @@ async function pullModel(tag, vramGb) {
         try {
           var ev = JSON.parse(line);
           if (ev.error) { progDiv.textContent = 'Error: ' + ev.error; progDiv.style.borderColor = '#ef4444'; return; }
-          if (ev.status === 'done') { progDiv.textContent = 'Download complete!'; progDiv.style.borderColor = '#4ade80'; progDiv.style.color = '#4ade80';
+          if (ev.status === 'done') { progDiv.textContent = t('dash.download_complete'); progDiv.style.borderColor = '#4ade80'; progDiv.style.color = '#4ade80';
             setTimeout(function() { poll(); }, 1000); return; }
           if (ev.total > 0) {
             var pct = Math.round(ev.completed / ev.total * 100);
@@ -2088,7 +2263,7 @@ async function pullModel(tag, vramGb) {
         } catch(e) {}
       }
     }
-    progDiv.textContent = 'Download complete!';
+    progDiv.textContent = t('dash.download_complete');
     progDiv.style.borderColor = '#4ade80'; progDiv.style.color = '#4ade80';
     setTimeout(function() { poll(); }, 1000);
   } catch(e) { progDiv.textContent = 'Failed: ' + e.message; progDiv.style.borderColor = '#ef4444'; }
