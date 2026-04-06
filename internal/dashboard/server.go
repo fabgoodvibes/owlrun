@@ -959,8 +959,8 @@ const dashboardHTML = `<!DOCTYPE html>
   .drag-handle { cursor: grab; color: var(--text-muted); font-size: 14px; opacity: 0.4; user-select: none; padding: 0 2px; letter-spacing: -2px; }
   .drag-handle:hover { opacity: 0.8; }
   .card[draggable="true"]:active .drag-handle { cursor: grabbing; }
-  .card.dragging { opacity: 0.4; border-style: dashed; }
-  .card.drag-over { border-color: var(--accent); box-shadow: 0 0 0 2px rgba(245,158,11,0.3); }
+  .card.dragging { opacity: 0.3; border-style: dashed; }
+  .drag-placeholder { border: 2px dashed var(--accent); border-radius: 12px; background: rgba(245,158,11,0.06); margin-bottom: 14px; break-inside: avoid; transition: height 0.15s; }
   /* Collapsible cards */
   .card-title { cursor: pointer; user-select: none; }
   .card-title .collapse-arrow { font-size: 10px; transition: transform .2s; margin-left: 4px; opacity: 0.5; }
@@ -1027,6 +1027,7 @@ const dashboardHTML = `<!DOCTYPE html>
   [data-theme="dark"] .theme-toggle::after { transform: translateX(20px); }
   .theme-label { font-size: 12px; color: var(--text-muted); display: flex; align-items: center; gap: 6px; }
   @keyframes spin { to { transform: rotate(360deg); } }
+  @keyframes ticker-scroll { 0% { transform: translateX(0); } 100% { transform: translateX(-50%); } }
   .spinner { display: inline-block; width: 12px; height: 12px; border: 2px solid var(--border); border-top-color: var(--accent); border-radius: 50%; animation: spin 0.6s linear infinite; vertical-align: middle; }
   .payout-item { display: flex; justify-content: space-between; align-items: center; padding: 6px 0; border-bottom: 1px solid var(--border); font-size: 13px; }
   .payout-item:last-child { border-bottom: none; }
@@ -1040,15 +1041,14 @@ const dashboardHTML = `<!DOCTYPE html>
 <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:14px;flex-wrap:wrap;gap:10px">
 <h1 style="margin-bottom:0">🦉 Owlrun <span id="version"></span><span id="network-badge" class="network-badge" style="display:none"></span></h1>
 <div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap">
-<!-- Notifications (compact, in header) -->
-<div id="notify-card" style="position:relative">
-  <span onclick="toggleNotifications()" style="cursor:pointer;font-size:13px;color:var(--text-muted);display:flex;align-items:center;gap:4px;padding:4px 10px;border:1px solid var(--border);border-radius:6px;background:var(--bg-card)">
-    <span data-i18n="dash.notifications">Notifications</span>
-    <span id="notify-badge" style="display:none;background:var(--accent);color:#fff;font-size:10px;padding:1px 6px;border-radius:8px;font-weight:700"></span>
-    <span id="notify-arrow" style="font-size:10px;transition:transform .2s">&#9660;</span>
-  </span>
-  <div id="broadcasts" style="display:none;position:absolute;top:100%;right:0;margin-top:6px;width:360px;max-height:300px;overflow-y:auto;background:var(--bg-card);border:1px solid var(--border);border-radius:10px;padding:14px;box-shadow:0 8px 24px rgba(0,0,0,0.3);z-index:20">
-    <div class="broadcast-empty" data-i18n="dash.notifications_empty">Gateway notifications will appear here.</div>
+<!-- Notifications (scrolling ticker) -->
+<div id="notify-card" style="position:relative;width:520px;height:32px;overflow:hidden;border:1px solid var(--border);border-radius:6px;background:var(--bg-card);cursor:pointer" onclick="toggleNotifications()">
+  <div id="notify-ticker" style="display:flex;align-items:center;height:100%;padding:0 10px;font-size:12px;color:var(--text-dim)">
+    <span id="notify-ticker-text" style="white-space:nowrap;display:inline-block" data-i18n="dash.notifications_empty">No notifications</span>
+    <span id="notify-badge" style="display:none;background:var(--accent);color:#fff;font-size:10px;padding:1px 6px;border-radius:8px;font-weight:700;margin-left:6px;flex-shrink:0;position:absolute;right:8px;z-index:1"></span>
+  </div>
+  <div id="broadcasts" style="display:none;position:absolute;top:100%;right:0;margin-top:6px;width:380px;max-height:320px;overflow-y:auto;background:var(--bg-card);border:1px solid var(--border);border-radius:10px;padding:14px;box-shadow:0 8px 24px rgba(0,0,0,0.3);z-index:20">
+    <div class="broadcast-empty" data-i18n="dash.notifications_empty">No notifications</div>
   </div>
 </div>
 <select id="lang-select" onchange="switchLang(this.value)" style="padding:4px 8px;border-radius:6px;border:1px solid var(--border-active);background:var(--bg-card);color:var(--text);font-size:13px;cursor:pointer"></select>
@@ -1365,18 +1365,41 @@ loadLocale(_i18nLang);
 
 function toggleNotifications() {
   var bc = document.getElementById('broadcasts');
-  var arrow = document.getElementById('notify-arrow');
-  var open = bc.style.display !== 'none';
-  bc.style.display = open ? 'none' : '';
-  arrow.style.transform = open ? '' : 'rotate(180deg)';
-  localStorage.setItem('owlrun-notify-open', open ? '' : '1');
+  bc.style.display = bc.style.display === 'none' ? '' : 'none';
 }
-(function() {
-  if (localStorage.getItem('owlrun-notify-open') === '1') {
-    document.getElementById('broadcasts').style.display = '';
-    document.getElementById('notify-arrow').style.transform = 'rotate(180deg)';
+// Close notifications dropdown when clicking outside
+document.addEventListener('click', function(e) {
+  if (!e.target.closest('#notify-card')) {
+    document.getElementById('broadcasts').style.display = 'none';
   }
-})();
+});
+
+// Notification scrolling ticker
+function updateTicker(msgs) {
+  var textEl = document.getElementById('notify-ticker-text');
+  if (!msgs || msgs.length === 0) {
+    textEl.textContent = t('dash.notifications_empty');
+    textEl.style.animation = 'none';
+    return;
+  }
+  // Join all messages with a separator
+  var sep = '  \u00a0\u00a0\u2022\u00a0\u00a0  ';
+  var full = msgs.map(function(m) {
+    return (m.title ? m.title + ' \u2014 ' : '') + m.message;
+  }).join(sep);
+  // Only scroll if text overflows the container
+  textEl.textContent = full;
+  var containerW = document.getElementById('notify-card').offsetWidth;
+  var textW = textEl.scrollWidth;
+  if (textW > containerW) {
+    // Duplicate for seamless loop
+    textEl.textContent = full + sep + full;
+    var dur = Math.max(15, textEl.scrollWidth / 40); // ~40px/s
+    textEl.style.animation = 'ticker-scroll ' + dur + 's linear infinite';
+  } else {
+    textEl.style.animation = 'none';
+  }
+}
 
 // ── Card collapse/expand ───────────────────────────────────────────
 function toggleCard(titleEl) {
@@ -1456,39 +1479,69 @@ document.addEventListener('click', function(e) {
   }
 });
 
-// ── Drag and drop ──────────────────────────────────────────────────
+// ── Drag and drop (with placeholder gap) ──────────────────────────
 var _dragCard = null;
+var _placeholder = null;
+var _dragNextSibling = null; // original position marker
+
+function createPlaceholder(h) {
+  var ph = document.createElement('div');
+  ph.className = 'drag-placeholder';
+  ph.style.height = h + 'px';
+  return ph;
+}
+function removePlaceholder() {
+  if (_placeholder && _placeholder.parentNode) _placeholder.parentNode.removeChild(_placeholder);
+  _placeholder = null;
+}
+
 document.addEventListener('dragstart', function(e) {
   var card = e.target.closest('.card[draggable]');
   if (!card) return;
   _dragCard = card;
-  card.classList.add('dragging');
+  _dragNextSibling = card.nextSibling; // remember original position
+  var h = card.offsetHeight;
   e.dataTransfer.effectAllowed = 'move';
+  setTimeout(function() {
+    card.classList.add('dragging');
+    _placeholder = createPlaceholder(Math.min(h, 60));
+  }, 0);
 });
+
 document.addEventListener('dragend', function(e) {
+  removePlaceholder();
   if (_dragCard) _dragCard.classList.remove('dragging');
-  document.querySelectorAll('.card.drag-over').forEach(function(c) { c.classList.remove('drag-over'); });
   _dragCard = null;
+  _dragNextSibling = null;
 });
+
 document.addEventListener('dragover', function(e) {
   e.preventDefault();
-  var card = e.target.closest('.card[draggable]');
-  if (!card || card === _dragCard) return;
+  if (!_dragCard || !_placeholder) return;
   e.dataTransfer.dropEffect = 'move';
-  document.querySelectorAll('.card.drag-over').forEach(function(c) { c.classList.remove('drag-over'); });
-  card.classList.add('drag-over');
+  var target = e.target.closest('.card[draggable]');
+  if (!target || target === _dragCard) return;
+  var grid = document.getElementById('card-grid');
+  var rect = target.getBoundingClientRect();
+  var midY = rect.top + rect.height / 2;
+  var insertBefore = e.clientY < midY ? target : target.nextSibling;
+  // Don't show placeholder at the original position
+  if (insertBefore === _dragCard || insertBefore === _dragNextSibling) {
+    removePlaceholder();
+    _placeholder = createPlaceholder(60);
+    return;
+  }
+  grid.insertBefore(_placeholder, insertBefore);
 });
+
 document.addEventListener('drop', function(e) {
   e.preventDefault();
-  var target = e.target.closest('.card[draggable]');
-  if (!target || !_dragCard || target === _dragCard) return;
-  target.classList.remove('drag-over');
-  var grid = document.getElementById('card-grid');
-  var cards = Array.from(grid.querySelectorAll('.card[draggable]'));
-  var fromIdx = cards.indexOf(_dragCard);
-  var toIdx = cards.indexOf(target);
-  if (fromIdx < toIdx) { target.parentNode.insertBefore(_dragCard, target.nextSibling); }
-  else { target.parentNode.insertBefore(_dragCard, target); }
+  if (!_dragCard || !_placeholder || !_placeholder.parentNode) return;
+  _placeholder.parentNode.insertBefore(_dragCard, _placeholder);
+  removePlaceholder();
+  _dragCard.classList.remove('dragging');
+  _dragCard = null;
+  _dragNextSibling = null;
   saveCardOrder();
 });
 function saveCardOrder() {
@@ -1881,14 +1934,16 @@ function update(d) {
     notifyBadge.style.display = '';
     var sorted = d.broadcasts.slice().sort(function(a, b) { return b.timestamp.localeCompare(a.timestamp); });
     bcEl.innerHTML = sorted.map(function(b) {
-      var t = new Date(b.timestamp);
-      var ts = isNaN(t) ? b.timestamp : t.toLocaleString();
+      var ts2 = new Date(b.timestamp);
+      var tsStr = isNaN(ts2) ? b.timestamp : ts2.toLocaleString();
       var title = b.title ? '<strong>' + escapeHtml(b.title) + '</strong> — ' : '';
-      return '<div class="broadcast-item"><span class="broadcast-msg">' + title + escapeHtml(b.message) + '</span><span class="broadcast-time">' + ts + '</span></div>';
+      return '<div class="broadcast-item"><span class="broadcast-msg">' + title + escapeHtml(b.message) + '</span><span style="color:var(--text-muted);font-size:12px;white-space:nowrap">' + tsStr + '</span></div>';
     }).join('');
+    updateTicker(sorted);
   } else {
-    bcEl.innerHTML = '<div class="broadcast-empty">' + escapeHtml(t('dash.broadcasts_empty')) + '</div>';
+    bcEl.innerHTML = '<div style="color:var(--text-muted);font-size:13px;font-style:italic;padding:4px 0">' + escapeHtml(t('dash.broadcasts_empty')) + '</div>';
     notifyBadge.style.display = 'none';
+    updateTicker([]);
   }
 
   document.getElementById('updated').textContent = t('dash.updated_fmt').replace('%s', new Date().toLocaleTimeString());
