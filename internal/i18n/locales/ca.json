@@ -172,6 +172,7 @@
   "dash.download_complete": "Desc\u00e0rrega completada!",
   "dash.download_checking": "Comprovant\u2026",
   "dash.sats_claimed_fmt": "%s sats reclamats",
+  "dash.settings": "Configuraci\u00f3",
   "dash.model": "Model",
   "dash.today": "Avui"
 }

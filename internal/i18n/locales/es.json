@@ -172,6 +172,7 @@
   "dash.download_complete": "\u00a1Descarga completada!",
   "dash.download_checking": "Comprobando\u2026",
   "dash.sats_claimed_fmt": "%s sats reclamados",
+  "dash.settings": "Configuraci\u00f3n",
   "dash.model": "Modelo",
   "dash.today": "Hoy"
 }

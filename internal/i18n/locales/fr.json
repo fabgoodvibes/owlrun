@@ -172,6 +172,7 @@
   "dash.download_complete": "T\u00e9l\u00e9chargement termin\u00e9 !",
   "dash.download_checking": "V\u00e9rification\u2026",
   "dash.sats_claimed_fmt": "%s sats r\u00e9clam\u00e9s",
+  "dash.settings": "Param\u00e8tres",
   "dash.model": "Mod\u00e8le",
   "dash.today": "Aujourd'hui"
 }

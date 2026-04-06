@@ -771,7 +771,7 @@ func (a *Agent) statusSnapshot() dashboard.Status {
 	if config.NeedsWallet(&a.cfg) {
 		s.Wallet.Warning = i18n.T("tray.wallet_msg")
 	} else if a.cfg.Account.LightningAddress != "" {
-		s.Wallet.Configured = i18n.T("tray.wallet_configured_fmt", a.cfg.Account.LightningAddress)
+		s.Wallet.Configured = a.cfg.Account.LightningAddress
 	}
 	switch state {
 	case StateEarning:

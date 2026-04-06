@@ -947,14 +947,14 @@ const dashboardHTML = `<!DOCTYPE html>
   body { background: var(--bg); color: var(--text); font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; font-size: 17px; padding: 28px 36px; transition: background var(--transition), color var(--transition); }
   h1 { font-size: 26px; font-weight: 600; margin-bottom: 22px; color: var(--text-heading); letter-spacing: -0.3px; display: flex; align-items: center; gap: 12px; }
   h1 span { opacity: 0.6; font-weight: 400; font-size: 16px; }
-  .grid { display: grid; grid-template-columns: 1fr 1fr 1fr 1fr; grid-template-rows: auto auto; gap: 14px; }
+  .grid { display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 14px; }
   .card { background: var(--bg-card); border: 1px solid var(--border); border-radius: 12px; padding: 20px; transition: background var(--transition), border-color var(--transition); }
   .card-title { font-size: 14px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.8px; color: var(--text-dim); margin-bottom: 16px; }
-  .card-wallet { grid-row: 1 / 3; }
+  .card-wallet { grid-row: 1 / 4; }
   .card-wide { grid-column: 1 / -1; }
   .card-notify { margin-bottom: 14px; }
   @media (max-width: 900px) { .grid { grid-template-columns: 1fr 1fr; } .card-wallet { grid-row: auto; } }
-  @media (max-width: 550px) { .grid { grid-template-columns: 1fr; } .card-wallet { grid-row: auto; } }
+  @media (max-width: 650px) { .grid { grid-template-columns: 1fr; } .card-wallet { grid-row: auto; } }
   .stat { display: flex; justify-content: space-between; align-items: center; margin-bottom: 10px; min-height: 26px; }
   .stat:last-child { margin-bottom: 0; }
   .stat-label { color: var(--text); font-size: 16px; }
@@ -1015,6 +1015,11 @@ const dashboardHTML = `<!DOCTYPE html>
   .payout-link { color: var(--accent); text-decoration: none; font-size: 11px; font-family: monospace; }
   .payout-link:hover { text-decoration: underline; }
   .payout-time { color: var(--text-muted); font-size: 11px; }
+  .cfg-tab { background: var(--bg-card-hover); border: 1px solid var(--border); color: var(--text-muted); padding: 6px 12px; font-size: 12px; font-weight: 600; cursor: pointer; transition: all 0.15s; flex: 1; text-align: center; }
+  .cfg-tab:first-child { border-radius: 6px 0 0 6px; }
+  .cfg-tab:last-child { border-radius: 0 6px 6px 0; }
+  .cfg-tab:not(:first-child) { border-left: none; }
+  .cfg-tab.active { background: var(--accent); color: #fff; border-color: var(--accent); }
 </style>
 </head>
 <body>
@@ -1026,13 +1031,21 @@ const dashboardHTML = `<!DOCTYPE html>
 </div>
 </div>
 <div id="wallet-warn" class="wallet-warn">
-  <div class="warn-title" data-i18n="dash.wallet_not_configured">Wallet not configured</div>
-  <div class="warn-body" id="wallet-warn-body"></div>
+  <div style="display:flex;justify-content:space-between;align-items:flex-start">
+    <div>
+      <div class="warn-title" data-i18n="dash.wallet_not_configured">Wallet not configured</div>
+      <div class="warn-body" id="wallet-warn-body"></div>
+    </div>
+    <button id="wallet-warn-close" onclick="dismissWalletBanner()" style="background:none;border:none;color:inherit;font-size:18px;cursor:pointer;padding:0 0 0 12px;line-height:1;opacity:0.6">&#10005;</button>
+  </div>
 </div>
-<!-- ═══ Notifications (full width, above grid) ═══ -->
+<!-- ═══ Notifications (collapsible) ═══ -->
 <div class="card card-notify" id="notify-card">
-  <div class="card-title" data-i18n="dash.notifications">Notifications</div>
-  <div id="broadcasts">
+  <div class="card-title" style="cursor:pointer;display:flex;justify-content:space-between;align-items:center" onclick="toggleNotifications()">
+    <span><span data-i18n="dash.notifications">Notifications</span> <span id="notify-badge" style="display:none;background:var(--accent);color:#fff;font-size:11px;padding:1px 7px;border-radius:10px;margin-left:6px;font-weight:700"></span></span>
+    <span id="notify-arrow" style="font-size:12px;transition:transform .2s">&#9660;</span>
+  </div>
+  <div id="broadcasts" style="display:none">
     <div class="broadcast-empty" data-i18n="dash.notifications_empty">Gateway notifications will appear here.</div>
   </div>
 </div>
@@ -1078,31 +1091,7 @@ const dashboardHTML = `<!DOCTYPE html>
         <div id="ln-edit-error" style="display:none;color:#ef4444;font-size:13px;margin-top:6px"></div>
       </div>
 
-      <!-- Payout threshold slider -->
-      <div style="margin-top:16px;padding-top:14px;border-top:1px solid var(--border)">
-        <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:6px">
-          <span style="font-size:14px;color:#d0d0e0" data-i18n="dash.payout_threshold">Payout threshold</span>
-          <span id="threshold-value" style="font-size:14px;color:#f7931a;font-weight:600">500 sats</span>
-        </div>
-        <input id="threshold-slider" type="range" min="100" max="1000" step="50" value="500" oninput="updateThresholdDisplay(this.value)" onchange="saveRedeemThreshold(this.value)" style="width:100%;accent-color:#f7931a;cursor:pointer" />
-        <div style="display:flex;justify-content:space-between;font-size:12px;color:var(--text-muted);margin-top:2px">
-          <span>100</span><span>500</span><span>1000</span>
-        </div>
-        <div style="font-size:13px;color:#aaaabb;margin-top:6px" id="threshold-hint" data-i18n="dash.payout_threshold_hint">Lower = faster payouts, higher fees. Higher = slower payouts, lower fees.</div>
-        <div style="font-size:13px;margin-top:4px">
-          <span style="color:#aaaabb" data-i18n="dash.payout_fee_label">Est. Lightning fee: </span>
-          <span id="fee-estimate" style="color:#f7931a;font-weight:600">~1%</span>
-        </div>
-        <div style="margin-top:8px">
-          <label style="display:flex;align-items:center;gap:8px;cursor:pointer;font-size:13px;color:var(--text-muted)">
-            <input type="checkbox" id="unlock-50" onchange="toggleLowThreshold(this.checked)" style="accent-color:#f7931a" />
-            <span data-i18n="dash.payout_unlock_50">Unlock 50 sat minimum</span>
-          </label>
-          <div id="low-threshold-warn" style="display:none;font-size:12px;color:#eab308;margin-top:4px;margin-left:24px">&#9888; ~10% eaten by Lightning fees at this level</div>
-        </div>
-      </div>
-
-      <!-- Job mode selector -->
+      <!-- Job mode selector (always visible) -->
       <div style="margin-top:16px;padding-top:14px;border-top:1px solid var(--border)">
         <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px">
           <span style="font-size:14px;color:#d0d0e0" data-i18n="dash.accept_jobs">Accept jobs</span>
@@ -1116,63 +1105,94 @@ const dashboardHTML = `<!DOCTYPE html>
         <div id="job-mode-hint" style="font-size:12px;color:var(--text-muted);margin-top:6px"></div>
       </div>
 
-      <!-- Karma & Free Tier -->
+      <!-- Settings tabs -->
       <div style="margin-top:16px;padding-top:14px;border-top:1px solid var(--border)">
-        <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:10px">
-          <span style="font-size:14px;color:#d0d0e0" data-i18n="dash.karma">Karma</span>
-          <span id="karma-badge" style="font-size:11px;padding:2px 8px;border-radius:4px;font-weight:700;text-transform:uppercase"></span>
+        <div id="cfg-tabs" style="display:flex;gap:0;margin-bottom:14px">
+          <button onclick="showCfgTab('payout')" data-cfg="payout" class="cfg-tab active" data-i18n="dash.payout_threshold">Payout</button>
+          <button onclick="showCfgTab('karma')" data-cfg="karma" class="cfg-tab" data-i18n="dash.karma">Karma</button>
+          <button onclick="showCfgTab('model-cfg')" data-cfg="model-cfg" class="cfg-tab" data-i18n="dash.model">Model</button>
         </div>
-        <div class="stat">
-          <span class="stat-label" data-i18n="dash.karma_score">Karma score</span>
-          <span class="stat-value" id="karma-score">0</span>
-        </div>
-        <div class="stat">
-          <span class="stat-label" data-i18n="dash.free_tier_jobs">Free tier jobs served</span>
-          <span class="stat-value" id="free-tier-jobs">0</span>
-        </div>
-        <div style="margin-top:10px">
+
+        <!-- Tab: Payout -->
+        <div id="cfg-payout" class="cfg-panel">
           <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:6px">
-            <span style="font-size:13px;color:var(--text-muted)" data-i18n="dash.donate_free_tier">Donate to free tier</span>
-            <span id="free-tier-value" style="font-size:14px;color:#f7931a;font-weight:600">0%</span>
+            <span style="font-size:14px;color:#d0d0e0" data-i18n="dash.payout_threshold">Payout threshold</span>
+            <span id="threshold-value" style="font-size:14px;color:#f7931a;font-weight:600">500 sats</span>
           </div>
-          <input id="free-tier-slider" type="range" min="0" max="100" step="5" value="0" oninput="updateFreeTierDisplay(this.value)" onchange="saveFreeTierPct(this.value)" style="width:100%;accent-color:#f7931a;cursor:pointer" />
+          <input id="threshold-slider" type="range" min="100" max="1000" step="50" value="500" oninput="updateThresholdDisplay(this.value)" onchange="saveRedeemThreshold(this.value)" style="width:100%;accent-color:#f7931a;cursor:pointer" />
           <div style="display:flex;justify-content:space-between;font-size:12px;color:var(--text-muted);margin-top:2px">
-            <span>0%</span><span>50%</span><span>100%</span>
+            <span>100</span><span>500</span><span>1000</span>
           </div>
-          <div style="font-size:12px;color:var(--text-muted);margin-top:6px" data-i18n="dash.donate_hint">Share idle cycles with free-tier users. Higher donation = more karma = more paid traffic routed to you.</div>
-        </div>
-      </div>
-
-      <!-- Keep warm toggle -->
-      <div style="margin-top:16px;padding-top:14px;border-top:1px solid var(--border)">
-        <div style="display:flex;justify-content:space-between;align-items:center">
-          <div>
-            <span style="font-size:14px;color:var(--text)" data-i18n="dash.keep_warm">Keep model warm</span>
-            <div style="font-size:12px;color:var(--text-muted);margin-top:2px" data-i18n="dash.keep_warm_hint">Ping every 4 min to prevent VRAM eviction</div>
+          <div style="font-size:13px;color:#aaaabb;margin-top:6px" id="threshold-hint" data-i18n="dash.payout_threshold_hint">Lower = faster payouts, higher fees. Higher = slower payouts, lower fees.</div>
+          <div style="font-size:13px;margin-top:4px">
+            <span style="color:#aaaabb" data-i18n="dash.payout_fee_label">Est. Lightning fee: </span>
+            <span id="fee-estimate" style="color:#f7931a;font-weight:600">~1%</span>
           </div>
-          <input type="checkbox" id="keep-warm-toggle" checked onchange="setKeepWarm(this.checked)" style="accent-color:#f7931a;width:18px;height:18px;cursor:pointer" />
+          <div style="margin-top:8px">
+            <label style="display:flex;align-items:center;gap:8px;cursor:pointer;font-size:13px;color:var(--text-muted)">
+              <input type="checkbox" id="unlock-50" onchange="toggleLowThreshold(this.checked)" style="accent-color:#f7931a" />
+              <span data-i18n="dash.payout_unlock_50">Unlock 50 sat minimum</span>
+            </label>
+            <div id="low-threshold-warn" style="display:none;font-size:12px;color:#eab308;margin-top:4px;margin-left:24px">&#9888; ~10% eaten by Lightning fees at this level</div>
+          </div>
         </div>
-      </div>
 
-      <!-- Context length selector -->
-      <div style="margin-top:16px;padding-top:14px;border-top:1px solid var(--border)">
-        <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px">
-          <span style="font-size:14px;color:#d0d0e0" data-i18n="dash.context_length">Context length</span>
-          <span id="ctx-len-label" style="font-size:13px;color:var(--text-muted)">8192</span>
+        <!-- Tab: Karma -->
+        <div id="cfg-karma" class="cfg-panel" style="display:none">
+          <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:10px">
+            <span style="font-size:14px;color:#d0d0e0" data-i18n="dash.karma">Karma</span>
+            <span id="karma-badge" style="font-size:11px;padding:2px 8px;border-radius:4px;font-weight:700;text-transform:uppercase"></span>
+          </div>
+          <div class="stat">
+            <span class="stat-label" data-i18n="dash.karma_score">Karma score</span>
+            <span class="stat-value" id="karma-score">0</span>
+          </div>
+          <div class="stat">
+            <span class="stat-label" data-i18n="dash.free_tier_jobs">Free tier jobs served</span>
+            <span class="stat-value" id="free-tier-jobs">0</span>
+          </div>
+          <div style="margin-top:10px">
+            <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:6px">
+              <span style="font-size:13px;color:var(--text-muted)" data-i18n="dash.donate_free_tier">Donate to free tier</span>
+              <span id="free-tier-value" style="font-size:14px;color:#f7931a;font-weight:600">0%</span>
+            </div>
+            <input id="free-tier-slider" type="range" min="0" max="100" step="5" value="0" oninput="updateFreeTierDisplay(this.value)" onchange="saveFreeTierPct(this.value)" style="width:100%;accent-color:#f7931a;cursor:pointer" />
+            <div style="display:flex;justify-content:space-between;font-size:12px;color:var(--text-muted);margin-top:2px">
+              <span>0%</span><span>50%</span><span>100%</span>
+            </div>
+            <div style="font-size:12px;color:var(--text-muted);margin-top:6px" data-i18n="dash.donate_hint">Share idle cycles with free-tier users. Higher donation = more karma = more paid traffic routed to you.</div>
+          </div>
         </div>
-        <div style="display:flex;gap:6px">
-          <select id="ctx-len-select" onchange="setContextLength(this.value)" style="flex:1;padding:8px 10px;border-radius:6px;border:1px solid var(--border-active);background:var(--bg-card-hover);color:var(--text);font-size:13px;cursor:pointer;appearance:auto">
-            <option value="2048">2K (2048)</option>
-            <option value="4096">4K (4096)</option>
-            <option value="8192" selected>8K (8192)</option>
-            <option value="16384">16K (16384)</option>
-            <option value="32768">32K (32768)</option>
-            <option value="65536">64K (65536)</option>
-            <option value="131072">128K (131072)</option>
-            <option value="262144">256K (262144)</option>
-          </select>
+
+        <!-- Tab: Model config -->
+        <div id="cfg-model-cfg" class="cfg-panel" style="display:none">
+          <div style="display:flex;justify-content:space-between;align-items:center">
+            <div>
+              <span style="font-size:14px;color:var(--text)" data-i18n="dash.keep_warm">Keep model warm</span>
+              <div style="font-size:12px;color:var(--text-muted);margin-top:2px" data-i18n="dash.keep_warm_hint">Ping every 4 min to prevent VRAM eviction</div>
+            </div>
+            <input type="checkbox" id="keep-warm-toggle" checked onchange="setKeepWarm(this.checked)" style="accent-color:#f7931a;width:18px;height:18px;cursor:pointer" />
+          </div>
+          <div style="margin-top:14px;padding-top:14px;border-top:1px solid var(--border)">
+            <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px">
+              <span style="font-size:14px;color:#d0d0e0" data-i18n="dash.context_length">Context length</span>
+              <span id="ctx-len-label" style="font-size:13px;color:var(--text-muted)">8192</span>
+            </div>
+            <div style="display:flex;gap:6px">
+              <select id="ctx-len-select" onchange="setContextLength(this.value)" style="flex:1;padding:8px 10px;border-radius:6px;border:1px solid var(--border-active);background:var(--bg-card-hover);color:var(--text);font-size:13px;cursor:pointer;appearance:auto">
+                <option value="2048">2K (2048)</option>
+                <option value="4096">4K (4096)</option>
+                <option value="8192" selected>8K (8192)</option>
+                <option value="16384">16K (16384)</option>
+                <option value="32768">32K (32768)</option>
+                <option value="65536">64K (65536)</option>
+                <option value="131072">128K (131072)</option>
+                <option value="262144">256K (262144)</option>
+              </select>
+            </div>
+            <div style="font-size:12px;color:var(--text-muted);margin-top:6px" data-i18n="dash.context_hint">Higher values use more VRAM. Model reloads on change.</div>
+          </div>
         </div>
-        <div style="font-size:12px;color:var(--text-muted);margin-top:6px" data-i18n="dash.context_hint">Higher values use more VRAM. Model reloads on change.</div>
       </div>
 
       <!-- Earnings stats -->
@@ -1243,14 +1263,18 @@ const dashboardHTML = `<!DOCTYPE html>
     </div>
   </div>
 
-  <!-- ═══ Row 1 right: Status, Earnings, Notifications ═══ -->
+  <!-- ═══ Row 1: Status, Earnings ═══ -->
   <div class="card">
     <div class="card-title" data-i18n="dash.status">Status</div>
     <div id="state-badge" class="state-badge">—</div>
     <div class="node-id" id="node-id"></div>
     <div class="node-id" id="provider-key" style="cursor:pointer;user-select:all" title="Click to copy"></div>
     <div style="margin-top:10px;border-top:1px solid var(--border);padding-top:10px">
-      <div id="models-section"></div>
+      <div id="models-summary" style="display:flex;justify-content:space-between;align-items:center;cursor:pointer" onclick="toggleModels()">
+        <span style="font-size:14px;color:var(--text)" id="models-summary-text"></span>
+        <span id="models-arrow" style="font-size:12px;color:var(--text-muted);transition:transform .2s">&#9660;</span>
+      </div>
+      <div id="models-section" style="display:none;margin-top:8px"></div>
     </div>
     <div style="margin-top:8px;padding-top:8px;border-top:1px solid var(--border);display:flex;flex-wrap:wrap;gap:3px 0">
       <span class="legend-row"><span class="dot dot-green"></span><span data-i18n="dash.legend.earning">Earning</span></span>
@@ -1277,6 +1301,27 @@ const dashboardHTML = `<!DOCTYPE html>
     <div style="margin-top:12px;font-size:12px;color:var(--text-muted);opacity:0.7" data-i18n="dash.usd_disclaimer">USD approximated at live BTC rate</div>
   </div>
 
+  <!-- ═══ Row 2: Gateway, BTC Price ═══ -->
+  <div class="card">
+    <div class="card-title" data-i18n="dash.gw">Gateway</div>
+    <div class="stat">
+      <span class="stat-label" data-i18n="dash.gw_connection">Connection</span>
+      <span class="stat-value" id="gw-connected">—</span>
+    </div>
+    <div class="stat">
+      <span class="stat-label" data-i18n="dash.gw_jobs_today">Jobs today</span>
+      <span class="stat-value" id="gw-jobs">—</span>
+    </div>
+    <div class="stat">
+      <span class="stat-label" data-i18n="dash.gw_tokens_today">Tokens today</span>
+      <span class="stat-value" id="gw-tokens">—</span>
+    </div>
+    <div class="stat">
+      <span class="stat-label" data-i18n="dash.gw_queue">Queue depth</span>
+      <span class="stat-value" id="gw-queue">—</span>
+    </div>
+  </div>
+
   <div class="card">
     <div class="card-title" data-i18n="dash.btc_price">Bitcoin Price</div>
     <div class="stat">
@@ -1298,27 +1343,6 @@ const dashboardHTML = `<!DOCTYPE html>
     <div class="stat">
       <span class="stat-label" data-i18n="dash.btc_status">Status</span>
       <span class="stat-value" id="btc-status">—</span>
-    </div>
-  </div>
-
-  <!-- ═══ Row 2 right: Gateway, GPU, Disk ═══ -->
-  <div class="card">
-    <div class="card-title" data-i18n="dash.gw">Gateway</div>
-    <div class="stat">
-      <span class="stat-label" data-i18n="dash.gw_connection">Connection</span>
-      <span class="stat-value" id="gw-connected">—</span>
-    </div>
-    <div class="stat">
-      <span class="stat-label" data-i18n="dash.gw_jobs_today">Jobs today</span>
-      <span class="stat-value" id="gw-jobs">—</span>
-    </div>
-    <div class="stat">
-      <span class="stat-label" data-i18n="dash.gw_tokens_today">Tokens today</span>
-      <span class="stat-value" id="gw-tokens">—</span>
-    </div>
-    <div class="stat">
-      <span class="stat-label" data-i18n="dash.gw_queue">Queue depth</span>
-      <span class="stat-value" id="gw-queue">—</span>
     </div>
   </div>
 
@@ -1364,10 +1388,6 @@ const dashboardHTML = `<!DOCTYPE html>
       <span class="stat-value" style="font-size:14px;color:#aaaabb;max-width:180px;text-align:right;word-break:break-all" id="disk-path">—</span>
     </div>
   </div>
-
-</div>
-
-
 
 </div>
 
@@ -1461,6 +1481,50 @@ function loadLocaleList() {
 loadLocaleList();
 loadLocale(_i18nLang);
 
+function toggleNotifications() {
+  var bc = document.getElementById('broadcasts');
+  var arrow = document.getElementById('notify-arrow');
+  var open = bc.style.display !== 'none';
+  bc.style.display = open ? 'none' : '';
+  arrow.style.transform = open ? '' : 'rotate(180deg)';
+  localStorage.setItem('owlrun-notify-open', open ? '' : '1');
+}
+(function() {
+  if (localStorage.getItem('owlrun-notify-open') === '1') {
+    document.getElementById('broadcasts').style.display = '';
+    document.getElementById('notify-arrow').style.transform = 'rotate(180deg)';
+  }
+})();
+
+function showCfgTab(name) {
+  document.querySelectorAll('.cfg-panel').forEach(function(p) { p.style.display = 'none'; });
+  document.querySelectorAll('.cfg-tab').forEach(function(t) { t.classList.remove('active'); });
+  var panel = document.getElementById('cfg-' + name);
+  var tab = document.querySelector('.cfg-tab[data-cfg="' + name + '"]');
+  if (panel) panel.style.display = '';
+  if (tab) tab.classList.add('active');
+}
+
+function toggleModels() {
+  var ms = document.getElementById('models-section');
+  var arrow = document.getElementById('models-arrow');
+  var open = ms.style.display !== 'none';
+  ms.style.display = open ? 'none' : '';
+  arrow.style.transform = open ? '' : 'rotate(180deg)';
+  localStorage.setItem('owlrun-models-open', open ? '' : '1');
+}
+(function() {
+  if (localStorage.getItem('owlrun-models-open') === '1') {
+    document.getElementById('models-section').style.display = '';
+    document.getElementById('models-arrow').style.transform = 'rotate(180deg)';
+  }
+})();
+
+function dismissWalletBanner() {
+  document.getElementById('wallet-warn').style.display = 'none';
+  localStorage.setItem('owlrun-wallet-banner-dismissed', '1');
+}
+
 function escapeHtml(s) { var d = document.createElement('div'); d.textContent = s; return d.innerHTML; }
 function fmt2(n) {
   if (n < 0.01) return '$' + n.toFixed(6);
@@ -1512,16 +1576,19 @@ function update(d) {
   // Wallet warning / configured banner
   var ww = document.getElementById('wallet-warn');
   var wwTitle = ww.querySelector('.warn-title');
+  var wwClose = document.getElementById('wallet-warn-close');
   if (d.wallet && d.wallet.warning) {
     wwTitle.textContent = t('dash.wallet_not_configured');
     document.getElementById('wallet-warn-body').innerHTML = d.wallet.warning;
     ww.classList.remove('configured');
     ww.style.display = 'block';
+    wwClose.style.display = 'none';
   } else if (d.wallet && d.wallet.configured) {
     wwTitle.textContent = t('dash.wallet_configured_banner');
-    document.getElementById('wallet-warn-body').textContent = d.wallet.configured;
+    document.getElementById('wallet-warn-body').textContent = t('tray.wallet_configured_fmt').replace('%s', d.wallet.configured);
     ww.classList.add('configured');
-    ww.style.display = 'block';
+    wwClose.style.display = '';
+    if (!localStorage.getItem('owlrun-wallet-banner-dismissed')) ww.style.display = 'block';
   } else { ww.classList.remove('configured'); ww.style.display = 'none'; }
 
   const [dotClass, label] = stateDisplay(d.state);
@@ -1562,16 +1629,24 @@ function update(d) {
 
   // Model picker — interactive
   var ms = document.getElementById('models-section');
+  var msSummary = document.getElementById('models-summary-text');
   var avail = d.available_models || [];
   var pulling = d.pulling || false;
   if (avail.length === 0) {
-    ms.innerHTML = '<div class="stat"><span class="stat-label">' + t('dash.model') + '</span><span class="stat-value">—</span></div>';
+    msSummary.textContent = t('dash.model') + ': —';
+    ms.innerHTML = '';
   } else {
     // Split into fits vs slow, sort: fits first (installed first within each group)
     var fitsModels = avail.filter(function(m) { return m.fits; });
     var slowModels = avail.filter(function(m) { return !m.fits; });
     fitsModels.sort(function(a,b) { return (b.installed?1:0) - (a.installed?1:0) || (b.active?1:0) - (a.active?1:0); });
     slowModels.sort(function(a,b) { return (b.installed?1:0) - (a.installed?1:0); });
+
+    // Models summary (always visible)
+    var activeModel = avail.filter(function(m) { return m.active; });
+    var installedCount = avail.filter(function(m) { return m.installed; }).length;
+    var activeName = activeModel.length > 0 ? activeModel[0].tag : '—';
+    msSummary.innerHTML = '<span style="color:var(--green);font-weight:600">' + escapeHtml(activeName) + '</span> <span style="font-size:12px;color:var(--text-muted)">(' + installedCount + ' ' + t('dash.models').toLowerCase() + ')</span>';
 
     var diskInfo = d.disk ? d.disk.free_gb.toFixed(1) + ' GB' : '';
     var html = '<div style="font-size:11px;color:var(--text-muted);margin-bottom:6px;display:flex;justify-content:space-between"><span>' + t('dash.models') + '</span><span>' + diskInfo + '</span></div>';
@@ -1790,7 +1865,10 @@ function update(d) {
 
   // Broadcasts
   var bcEl = document.getElementById('broadcasts');
+  var notifyBadge = document.getElementById('notify-badge');
   if (d.broadcasts && d.broadcasts.length > 0) {
+    notifyBadge.textContent = d.broadcasts.length;
+    notifyBadge.style.display = '';
     var sorted = d.broadcasts.slice().sort(function(a, b) { return b.timestamp.localeCompare(a.timestamp); });
     bcEl.innerHTML = sorted.map(function(b) {
       var t = new Date(b.timestamp);
@@ -1800,6 +1878,7 @@ function update(d) {
     }).join('');
   } else {
     bcEl.innerHTML = '<div class="broadcast-empty">' + escapeHtml(t('dash.broadcasts_empty')) + '</div>';
+    notifyBadge.style.display = 'none';
   }
 
   document.getElementById('updated').textContent = t('dash.updated_fmt').replace('%s', new Date().toLocaleTimeString());

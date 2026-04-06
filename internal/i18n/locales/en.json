@@ -172,6 +172,7 @@
   "dash.download_complete": "Download complete!",
   "dash.download_checking": "Checking\u2026",
   "dash.sats_claimed_fmt": "%s sats claimed",
+  "dash.settings": "Settings",
   "dash.model": "Model",
   "dash.today": "Today"
 }
