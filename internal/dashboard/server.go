@@ -29,6 +29,7 @@ type Status struct {
 	State       string `json:"state"`        // "earning" | "idle" | "paused" | "error"
 	ErrorDetail string `json:"error_detail,omitempty"` // user-facing error message when state=error
 
+	Busy          string `json:"busy,omitempty"`           // non-empty while an async op (model load, gpu split, etc.) is running
 	ModelMode     string `json:"model_mode"`              // "auto" or "manual"
 	ModelCategory string `json:"model_category,omitempty"` // auto-mode category
 
@@ -49,6 +50,9 @@ type Status struct {
 		TempC       int     `json:"temp_c"`
 		PowerW      float64 `json:"power_w"`
 		VRAMExact   bool    `json:"vram_exact"`
+		Count       int     `json:"count"`     // number of GPUs detected (>=1 for multi-GPU rigs)
+		Split       bool    `json:"split"`     // user has enabled multi-GPU model splitting
+		GPUs        []GPUEntry `json:"gpus,omitempty"` // per-GPU breakdown for multi-GPU display
 	} `json:"gpu"`
 
 	Model           string                        `json:"model"`
@@ -81,6 +85,7 @@ type Status struct {
 
 	AvailableModels  []AvailableModel `json:"available_models,omitempty"`
 	Pulling          bool             `json:"pulling"` // true if download in progress
+	PullingModel     string           `json:"pulling_model,omitempty"` // tag being downloaded
 	ContextLength    int              `json:"context_length"`
 	KeepWarm         bool             `json:"keep_warm"`
 	FreeTierPct      int              `json:"free_tier_pct"`
@@ -92,6 +97,18 @@ type Status struct {
 	BtcPrice         BtcPriceInfo   `json:"btc_price"`
 	Broadcasts       []BroadcastMsg `json:"broadcasts"`
 	SatsWallet       SatsWalletInfo `json:"sats_wallet"`
+}
+
+// GPUEntry is a single physical GPU in the dashboard status payload,
+// with both static metadata and the most recent live stats.
+type GPUEntry struct {
+	Name        string  `json:"name"`
+	VRAMTotalMB int     `json:"vram_total_mb"`
+	VRAMFreeMB  int     `json:"vram_free_mb"`
+	UtilPct     int     `json:"util_pct"`
+	TempC       int     `json:"temp_c"`
+	PowerW      float64 `json:"power_w"`
+	Active      bool    `json:"active"` // true if Ollama is allowed to use this GPU
 }
 
 // ModelPricingInfo holds per-model pricing from the gateway.
@@ -173,6 +190,9 @@ type SetKeepWarmFunc func(on bool) error
 // SetModelModeFunc is called when the user toggles between auto and manual mode.
 type SetModelModeFunc func(mode string) error
 
+// SetGPUSplitFunc is called when the user toggles multi-GPU model splitting.
+type SetGPUSplitFunc func(on bool) error
+
 // SetCategoryFunc is called when the user changes the auto-mode category.
 type SetCategoryFunc func(cat string) error
 
@@ -217,12 +237,26 @@ type Server struct {
 	pullModel      atomic.Pointer[PullModelFunc]
 	removeModel    atomic.Pointer[RemoveModelFunc]
 	pulling        atomic.Bool // true while a pull is in progress
+	pullingModel   atomic.Pointer[string] // tag of the model currently being pulled
 	setJobMode     atomic.Pointer[SetJobModeFunc]
 	setCtxLen      atomic.Pointer[SetContextLengthFunc]
 	setFreeTier    atomic.Pointer[SetFreeTierPctFunc]
 	setKeepWarm    atomic.Pointer[SetKeepWarmFunc]
 	setModelMode   atomic.Pointer[SetModelModeFunc]
 	setCategory    atomic.Pointer[SetCategoryFunc]
+	setGPUSplit    atomic.Pointer[SetGPUSplitFunc]
+	busy           atomic.Pointer[string] // non-nil while a long async op is in progress
+}
+
+// setBusy publishes a transient operation label (e.g. "Applying GPU split…")
+// that the dashboard JS uses to disable controls and show a spinner.
+func (s *Server) setBusy(label string) {
+	if label == "" {
+		s.busy.Store(nil)
+		return
+	}
+	l := label
+	s.busy.Store(&l)
 }
 
 // New creates a dashboard Server on the given port.
@@ -299,6 +333,11 @@ func (s *Server) SetModelModeSetter(fn SetModelModeFunc) {
 	s.setModelMode.Store(&fn)
 }
 
+// SetGPUSplitSetter wires the multi-GPU split toggle function.
+func (s *Server) SetGPUSplitSetter(fn SetGPUSplitFunc) {
+	s.setGPUSplit.Store(&fn)
+}
+
 // SetCategorySetter wires the category change function.
 func (s *Server) SetCategorySetter(fn SetCategoryFunc) {
 	s.setCategory.Store(&fn)
@@ -324,6 +363,7 @@ func (s *Server) Start() error {
 	mux.HandleFunc("/api/set-keep-warm", s.handleSetKeepWarm)
 	mux.HandleFunc("/api/set-model-mode", s.handleSetModelMode)
 	mux.HandleFunc("/api/set-category", s.handleSetCategory)
+	mux.HandleFunc("/api/set-gpu-split", s.handleSetGPUSplit)
 	addr := fmt.Sprintf("127.0.0.1:%d", s.port)
 	ln, err := net.Listen("tcp", addr)
 	if err != nil {
@@ -355,6 +395,12 @@ func (s *Server) handleStatus(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Access-Control-Allow-Origin", "*")
 	st := s.getStatus()
 	st.Pulling = s.pulling.Load()
+	if pm := s.pullingModel.Load(); pm != nil {
+		st.PullingModel = *pm
+	}
+	if b := s.busy.Load(); b != nil {
+		st.Busy = *b
+	}
 	json.NewEncoder(w).Encode(st)
 }
 
@@ -724,6 +770,43 @@ func (s *Server) handleSetCategory(w http.ResponseWriter, r *http.Request) {
 	json.NewEncoder(w).Encode(map[string]any{"status": "ok", "category": req.Category})
 }
 
+func (s *Server) handleSetGPUSplit(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Content-Type", "application/json")
+	w.Header().Set("Access-Control-Allow-Origin", "*")
+
+	if r.Method != http.MethodPost {
+		w.WriteHeader(http.StatusMethodNotAllowed)
+		json.NewEncoder(w).Encode(map[string]string{"error": "POST required"})
+		return
+	}
+
+	fn := s.setGPUSplit.Load()
+	if fn == nil {
+		w.WriteHeader(http.StatusServiceUnavailable)
+		json.NewEncoder(w).Encode(map[string]string{"error": "not ready"})
+		return
+	}
+
+	var req struct {
+		On bool `json:"on"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		w.WriteHeader(http.StatusBadRequest)
+		json.NewEncoder(w).Encode(map[string]string{"error": "invalid request"})
+		return
+	}
+
+	s.setBusy("Applying GPU split…")
+	defer s.setBusy("")
+	if err := (*fn)(req.On); err != nil {
+		w.WriteHeader(http.StatusInternalServerError)
+		json.NewEncoder(w).Encode(map[string]string{"error": err.Error()})
+		return
+	}
+
+	json.NewEncoder(w).Encode(map[string]any{"status": "ok", "gpu_split": req.On})
+}
+
 func (s *Server) handleSwitchModel(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
 	w.Header().Set("Access-Control-Allow-Origin", "*")
@@ -754,6 +837,8 @@ func (s *Server) handleSwitchModel(w http.ResponseWriter, r *http.Request) {
 		json.NewEncoder(w).Encode(map[string]string{"error": "not ready"})
 		return
 	}
+	s.setBusy("Loading model " + req.Model + "…")
+	defer s.setBusy("")
 	if err := (*fn)(req.Model); err != nil {
 		w.WriteHeader(http.StatusBadRequest)
 		json.NewEncoder(w).Encode(map[string]string{"error": err.Error()})
@@ -809,7 +894,12 @@ func (s *Server) handlePullModel(w http.ResponseWriter, r *http.Request) {
 	}
 
 	s.pulling.Store(true)
-	defer s.pulling.Store(false)
+	tag := req.Model
+	s.pullingModel.Store(&tag)
+	defer func() {
+		s.pulling.Store(false)
+		s.pullingModel.Store(nil)
+	}()
 
 	ch := (*fn)(req.Model)
 	for p := range ch {
@@ -1074,6 +1164,11 @@ const dashboardHTML = `<!DOCTYPE html>
 </style>
 </head>
 <body>
+<div id="busy-banner" style="display:none;position:fixed;top:0;left:0;right:0;z-index:9999;padding:10px 16px;background:#f7931a;color:#000;font-size:13px;font-weight:600;text-align:center;box-shadow:0 2px 8px rgba(0,0,0,.3)">
+  <span class="spinner" style="display:inline-block;width:12px;height:12px;border:2px solid #000;border-top-color:transparent;border-radius:50%;animation:spin 0.8s linear infinite;vertical-align:middle;margin-right:8px"></span>
+  <span id="busy-text">Working…</span>
+</div>
+<style>@keyframes spin{to{transform:rotate(360deg)}} body.busy button,body.busy input[type=checkbox],body.busy select{pointer-events:none;opacity:.55}</style>
 <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:22px">
 <h1 style="margin-bottom:0">🦉 Owlrun <span id="version"></span><span id="network-badge" class="network-badge" style="display:none"></span></h1>
 <div class="theme-label"><span id="theme-icon">☀️</span><div class="theme-toggle" onclick="toggleTheme()"></div><span id="theme-icon2">🌙</span></div>
@@ -1193,6 +1288,17 @@ const dashboardHTML = `<!DOCTYPE html>
             <span>0%</span><span>50%</span><span>100%</span>
           </div>
           <div style="font-size:12px;color:var(--text-muted);margin-top:6px">Share idle cycles with free-tier users. Higher donation = more karma = more paid traffic routed to you.</div>
+        </div>
+      </div>
+
+      <!-- Multi-GPU split toggle (hidden when single GPU) -->
+      <div id="gpu-split-row" style="display:none;margin-top:16px;padding-top:14px;border-top:1px solid var(--border)">
+        <div style="display:flex;justify-content:space-between;align-items:center">
+          <div>
+            <span style="font-size:14px;color:var(--text)">Split model across GPUs</span>
+            <div id="gpu-split-hint" style="font-size:12px;color:var(--text-muted);margin-top:2px">Off: each model fits the largest single GPU. On: spread one model across all cards (more VRAM, slower interconnect).</div>
+          </div>
+          <input type="checkbox" id="gpu-split-toggle" onchange="setGPUSplit(this.checked)" style="accent-color:#f7931a;width:18px;height:18px;cursor:pointer" />
         </div>
       </div>
 
@@ -1377,7 +1483,8 @@ const dashboardHTML = `<!DOCTYPE html>
 
   <div class="card">
     <div class="card-title">GPU</div>
-    <div class="stat"><span class="stat-label" id="gpu-name" style="color:#d0d0e0;font-size:15px"></span></div>
+    <div class="stat" id="gpu-name-row"><span class="stat-label" id="gpu-name" style="color:#d0d0e0;font-size:15px"></span></div>
+    <div id="gpu-list" style="margin:4px 0 8px 0;font-size:12px;color:var(--text-muted);display:none"></div>
     <div class="stat">
       <span class="stat-label">Utilisation</span>
       <span class="stat-value" style="display:flex;align-items:center;gap:8px">
@@ -1386,14 +1493,17 @@ const dashboardHTML = `<!DOCTYPE html>
       </span>
     </div>
     <div class="stat">
-      <span class="stat-label">VRAM free</span>
-      <span class="stat-value" id="vram-free">—</span>
+      <span class="stat-label">Total VRAM</span>
+      <span class="stat-value" style="display:flex;align-items:center;gap:8px">
+        <span id="vram-free">—</span>
+        <div class="bar-wrap"><div class="bar-fill bar-green" id="vram-bar" style="width:0%"></div></div>
+      </span>
     </div>
-    <div class="stat">
+    <div class="stat" id="temp-row">
       <span class="stat-label">Temperature</span>
       <span class="stat-value" id="temp">—</span>
     </div>
-    <div class="stat">
+    <div class="stat" id="power-row">
       <span class="stat-label">Power draw</span>
       <span class="stat-value" id="power">—</span>
     </div>
@@ -1480,6 +1590,17 @@ function stateDisplay(state) {
 }
 
 function update(d) {
+  // Busy banner — server-published transient operation label.
+  var bb = document.getElementById('busy-banner');
+  if (d.busy) {
+    document.getElementById('busy-text').textContent = d.busy;
+    bb.style.display = '';
+    document.body.classList.add('busy');
+  } else {
+    bb.style.display = 'none';
+    document.body.classList.remove('busy');
+  }
+
   // Override state: if gateway says registered+connected, node is earning
   if ((d.state === 'ready' || d.state === 'wallet') && d.gateway && d.gateway.connected && d.gateway.status === 'registered') {
     d.state = 'earning';
@@ -1548,9 +1669,57 @@ function update(d) {
 
   const g = d.gpu;
   document.getElementById('gpu-name').textContent  = g.name || 'No GPU detected';
+  // Hide the single-name header and aggregate temp/power when the per-GPU list is shown.
+  var multi = (g.gpus && g.gpus.length > 1);
+  document.getElementById('gpu-name-row').style.display = multi ? 'none' : '';
+  document.getElementById('temp-row').style.display = multi ? 'none' : '';
+  document.getElementById('power-row').style.display = multi ? 'none' : '';
+
+  // VRAM bar — fills with % USED of the EFFECTIVE VRAM (active GPUs only).
+  var vramTotalMB = g.vram_total_mb;
+  var vramFreeMB  = g.vram_free_mb;
+  var vramBar = document.getElementById('vram-bar');
+  if (vramTotalMB > 0) {
+    var freePct = Math.max(0, Math.min(100, Math.round(vramFreeMB * 100 / vramTotalMB)));
+    vramBar.style.width = freePct + '%';
+    vramBar.className = 'bar-fill ' + (freePct < 10 ? 'bar-red' : freePct < 25 ? 'bar-yellow' : 'bar-green');
+  } else {
+    vramBar.style.width = '0%';
+  }
+
+  // Multi-GPU breakdown — list every detected card with per-GPU live stats.
+  var gpuList = document.getElementById('gpu-list');
+  if (g.gpus && g.gpus.length > 1) {
+    var rows = g.gpus.map(function(x) {
+      var label = x.active ? (g.split ? 'split' : 'active') : 'idle';
+      var dotColor = x.active ? '#4ade80' : '#555';
+      var totalGB = (x.vram_total_mb/1024).toFixed(1);
+      var freeStr = x.vram_free_mb ? (x.vram_free_mb/1024).toFixed(1) + ' / ' + totalGB + ' GB' : totalGB + ' GB';
+      var tempStr = x.temp_c ? x.temp_c + '&deg;C' : '';
+      var powerStr = x.power_w ? Math.round(x.power_w) + 'W' : '';
+      var statsLine = [x.util_pct + '% util', freeStr, tempStr, powerStr].filter(Boolean).join(' &middot; ');
+      return '<div style="padding:6px 0;border-top:1px solid var(--border)">' +
+             '<div style="display:flex;justify-content:space-between;gap:8px">' +
+               '<span><span style="color:' + dotColor + '">&#9679;</span> ' + x.name + '</span>' +
+               '<span style="color:#888">(' + label + ')</span>' +
+             '</div>' +
+             '<div style="margin-left:14px;color:#9999aa;font-size:11px">' + statsLine + '</div>' +
+             '</div>';
+    });
+    gpuList.innerHTML = rows.join('');
+    gpuList.style.display = '';
+  } else {
+    gpuList.style.display = 'none';
+  }
+
   document.getElementById('util-pct').textContent  = g.util_pct + '%';
   document.getElementById('util-bar').style.width  = g.util_pct + '%';
-  document.getElementById('vram-free').textContent = fmtMB(g.vram_free_mb);
+  if (vramTotalMB > 0) {
+    document.getElementById('vram-free').textContent =
+      (vramFreeMB/1024).toFixed(1) + ' / ' + (vramTotalMB/1024).toFixed(1) + ' GB';
+  } else {
+    document.getElementById('vram-free').textContent = fmtMB(vramFreeMB);
+  }
   document.getElementById('temp').textContent      = g.temp_c ? g.temp_c + ' °C' : '—';
   document.getElementById('power').textContent     = g.power_w ? g.power_w.toFixed(0) + ' W' : '—';
 
@@ -1561,6 +1730,7 @@ function update(d) {
   var ms = document.getElementById('models-section');
   var avail = d.available_models || [];
   var pulling = d.pulling || false;
+  var pullingTag = d.pulling_model || '';
   var modelMode = d.model_mode || 'auto';
   var modelCategory = d.model_category || '';
 
@@ -1601,21 +1771,21 @@ function update(d) {
       h += '</div></div>';
       if (isActive) {
         h += '<span style="font-size:9px;background:#4ade80;color:#000;padding:2px 6px;border-radius:4px;font-weight:700;flex-shrink:0">ACTIVE</span>';
-      } else if (isRegistered && m.installed && !pulling) {
+      } else if (pulling && m.tag === pullingTag) {
+        h += '<span style="font-size:10px;color:var(--text-muted);flex-shrink:0"><span class="spinner"></span> Downloading…</span>';
+      } else if (isRegistered && m.installed) {
         h += '<div style="display:flex;gap:4px;align-items:center;flex-shrink:0">';
         h += '<span style="font-size:9px;background:#22c55e33;color:#4ade80;padding:2px 6px;border-radius:4px;font-weight:600">AVAILABLE</span>';
         h += '<button onclick="switchModel(\'' + escapeHtml(m.tag) + '\')" style="font-size:10px;background:var(--bg-card-hover);color:var(--text);border:1px solid var(--border-active);border-radius:4px;padding:2px 8px;cursor:pointer">Activate</button>';
         h += '<button onclick="removeModel(\'' + escapeHtml(m.tag) + '\')" style="font-size:10px;background:var(--bg);color:#ef4444;border:1px solid #ef444444;border-radius:4px;padding:2px 6px;cursor:pointer" title="Remove model">\u2715</button>';
         h += '</div>';
-      } else if (m.installed && !pulling) {
+      } else if (m.installed) {
         h += '<div style="display:flex;gap:4px;flex-shrink:0">';
         h += '<button onclick="switchModel(\'' + escapeHtml(m.tag) + '\')" style="font-size:10px;background:var(--bg-card-hover);color:var(--text);border:1px solid var(--border-active);border-radius:4px;padding:2px 8px;cursor:pointer">Activate</button>';
         h += '<button onclick="removeModel(\'' + escapeHtml(m.tag) + '\')" style="font-size:10px;background:var(--bg);color:#ef4444;border:1px solid #ef444444;border-radius:4px;padding:2px 6px;cursor:pointer" title="Remove model">\u2715</button>';
         h += '</div>';
-      } else if (!m.installed && !pulling) {
-        h += '<button id="dl-' + escapeHtml(m.tag).replace(/[:.]/g,'_') + '" onclick="pullModel(\'' + escapeHtml(m.tag) + '\',' + m.vram_gb + ')" style="font-size:10px;background:var(--bg);color:var(--accent);border:1px solid rgba(245,158,11,0.27);border-radius:4px;padding:2px 8px;cursor:pointer;flex-shrink:0">Download</button>';
-      } else {
-        h += '<span style="font-size:10px;color:var(--text-muted);flex-shrink:0"><span class="spinner"></span></span>';
+      } else if (!m.installed) {
+        h += '<button id="dl-' + escapeHtml(m.tag).replace(/[:.]/g,'_') + '" onclick="pullModel(\'' + escapeHtml(m.tag) + '\',' + m.vram_gb + ')"' + (pulling ? ' disabled' : '') + ' style="font-size:10px;background:var(--bg);color:var(--accent);border:1px solid rgba(245,158,11,0.27);border-radius:4px;padding:2px 8px;cursor:' + (pulling ? 'not-allowed' : 'pointer') + ';flex-shrink:0' + (pulling ? ';opacity:.5' : '') + '">Download</button>';
       }
       h += '</div>';
       return h;
@@ -1741,6 +1911,25 @@ function update(d) {
     var kwToggle = document.getElementById('keep-warm-toggle');
     if (document.activeElement !== kwToggle) {
       kwToggle.checked = d.keep_warm !== false;
+    }
+
+    // Multi-GPU split — only show row when more than one GPU is detected.
+    var gsRow = document.getElementById('gpu-split-row');
+    var gsToggle = document.getElementById('gpu-split-toggle');
+    if (d.gpu && d.gpu.count && d.gpu.count > 1) {
+      gsRow.style.display = '';
+      if (document.activeElement !== gsToggle) {
+        gsToggle.checked = !!d.gpu.split;
+      }
+      var hint = document.getElementById('gpu-split-hint');
+      if (hint && d.gpu.gpus && d.gpu.gpus.length) {
+        var totalMB = 0, maxMB = 0;
+        d.gpu.gpus.forEach(function(g) { totalMB += g.vram_total_mb; if (g.vram_total_mb > maxMB) maxMB = g.vram_total_mb; });
+        var totalGB = (totalMB/1024).toFixed(1), maxGB = (maxMB/1024).toFixed(1);
+        hint.textContent = d.gpu.count + 'x GPUs detected. Off: largest single (' + maxGB + ' GB). On: pooled (' + totalGB + ' GB), slower interconnect.';
+      }
+    } else {
+      gsRow.style.display = 'none';
     }
 
     // Context length
@@ -1963,6 +2152,24 @@ async function setKeepWarm(on) {
   } catch(e) {}
 }
 
+async function setGPUSplit(on) {
+  // Optimistic banner — server publishes the same once the request lands.
+  document.getElementById('busy-text').textContent = 'Applying GPU split…';
+  document.getElementById('busy-banner').style.display = '';
+  document.body.classList.add('busy');
+  try {
+    var r = await fetch('/api/set-gpu-split', {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({on:on})});
+    if (!r.ok) {
+      var j = await r.json();
+      alert(j.error || 'failed to update gpu split');
+      // Revert checkbox on failure.
+      document.getElementById('gpu-split-toggle').checked = !on;
+      return;
+    }
+    poll();
+  } catch(e) {}
+}
+
 async function setContextLength(val) {
   try {
     var r = await fetch('/api/set-context-length', {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({context_length:parseInt(val)})});
@@ -2138,6 +2345,9 @@ async function removeModel(tag) {
 
 async function switchModel(tag) {
   if (!confirm('Switch active model to ' + tag + '?\n\nThis will reload the model into memory and re-register with the gateway.')) return;
+  document.getElementById('busy-text').textContent = 'Loading model ' + tag + '…';
+  document.getElementById('busy-banner').style.display = '';
+  document.body.classList.add('busy');
   try {
     var resp = await fetch('/api/switch-model', {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({model:tag})});
     var data = await resp.json();

@@ -35,8 +35,14 @@ func findOllama() (string, error) {
 	return "", exec.ErrNotFound
 }
 
-// ollamaEnv returns the current environment unchanged on macOS.
-func ollamaEnv(_ gpu.Info) []string { return os.Environ() }
+// ollamaEnv returns the environment for Ollama on macOS.
+// Apple Silicon uses Metal/unified memory; gpuSplit is a no-op (always one
+// integrated GPU). Multi-GPU env vars are still emitted in the rare eGPU case.
+func ollamaEnv(info gpu.Info, gpuSplit bool) []string {
+	env := os.Environ()
+	env = append(env, gpuLayerEnv(info, gpuSplit)...)
+	return env
+}
 
 // killProcess sends SIGKILL on macOS.
 func killProcess(cmd *exec.Cmd) error {

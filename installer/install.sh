@@ -82,31 +82,55 @@ detect_arch() {
 }
 
 detect_gpu() {
-  GPU_VENDOR="none"; GPU_NAME="none"; GPU_VRAM_MB=0
+  GPU_VENDOR="none"; GPU_NAME="none"; GPU_VRAM_MB=0; GPU_COUNT=0
+  GPU_NAMES=(); GPU_VRAMS_MB=()
 
-  # NVIDIA (Linux + macOS)
+  # NVIDIA (Linux + macOS) — supports multiple GPUs
   if command -v nvidia-smi &>/dev/null; then
     local info
-    info=$(nvidia-smi --query-gpu=name,memory.total --format=csv,noheader 2>/dev/null | head -1 || true)
+    info=$(nvidia-smi --query-gpu=name,memory.total --format=csv,noheader 2>/dev/null || true)
     if [[ -n "$info" ]]; then
       GPU_VENDOR="nvidia"
-      GPU_NAME=$(echo "$info" | cut -d',' -f1 | xargs)
-      GPU_VRAM_MB=$(echo "$info" | cut -d',' -f2 | tr -dc '0-9')
+      while IFS= read -r line; do
+        [[ -z "$line" ]] && continue
+        local n v
+        n=$(echo "$line" | cut -d',' -f1 | xargs)
+        v=$(echo "$line" | cut -d',' -f2 | tr -dc '0-9')
+        GPU_NAMES+=("$n")
+        GPU_VRAMS_MB+=("$v")
+        GPU_VRAM_MB=$(( GPU_VRAM_MB + v ))
+        GPU_COUNT=$(( GPU_COUNT + 1 ))
+      done <<< "$info"
+      GPU_NAME="${GPU_NAMES[0]}"
       return
     fi
   fi
 
-  # Apple Silicon
+  # Apple Silicon (single integrated GPU)
   if [[ "$OS" == "darwin" ]] && [[ "$(uname -m)" == "arm64" ]]; then
     GPU_VENDOR="apple"
     GPU_NAME=$(sysctl -n machdep.cpu.brand_string 2>/dev/null || echo "Apple Silicon")
     GPU_VRAM_MB=$(( $(sysctl -n hw.memsize 2>/dev/null || echo 0) / 1024 / 1024 ))
+    GPU_NAMES+=("$GPU_NAME"); GPU_VRAMS_MB+=("$GPU_VRAM_MB"); GPU_COUNT=1
     return
   fi
 
-  # AMD on Linux
+  # AMD on Linux — supports multiple GPUs via rocm-smi
   if [[ "$OS" == "linux" ]] && command -v rocm-smi &>/dev/null; then
-    GPU_VENDOR="amd"; GPU_NAME="AMD GPU (ROCm)"; GPU_VRAM_MB=0
+    GPU_VENDOR="amd"
+    local count
+    count=$(rocm-smi --showid 2>/dev/null | grep -cE '^GPU\[[0-9]+\]' || echo 0)
+    if (( count > 0 )); then
+      GPU_COUNT=$count
+      for ((i=0; i<count; i++)); do
+        GPU_NAMES+=("AMD GPU $i (ROCm)")
+        GPU_VRAMS_MB+=(0)
+      done
+    else
+      GPU_COUNT=1
+      GPU_NAMES+=("AMD GPU (ROCm)"); GPU_VRAMS_MB+=(0)
+    fi
+    GPU_NAME="${GPU_NAMES[0]}"
   fi
 }
 
@@ -326,7 +350,15 @@ if [[ "$GPU_VENDOR" == "none" ]]; then
   fi
 else
   GPU_VRAM_GB=$(awk "BEGIN{printf \"%.1f\", $GPU_VRAM_MB/1024}")
-  ok "$GPU_NAME — ${GPU_VRAM_GB} GB VRAM ($GPU_VENDOR)"
+  if (( GPU_COUNT > 1 )); then
+    ok "${GPU_COUNT}x $GPU_VENDOR GPUs detected — ${GPU_VRAM_GB} GB VRAM total"
+    for i in "${!GPU_NAMES[@]}"; do
+      gpu_vram_gb=$(awk "BEGIN{printf \"%.1f\", ${GPU_VRAMS_MB[$i]}/1024}")
+      ok "  [$i] ${GPU_NAMES[$i]} — ${gpu_vram_gb} GB VRAM"
+    done
+  else
+    ok "$GPU_NAME — ${GPU_VRAM_GB} GB VRAM ($GPU_VENDOR)"
+  fi
 fi
 
 # ── 2. Disk space check ───────────────────────────────────────────────────────
