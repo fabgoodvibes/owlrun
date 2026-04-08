@@ -4,8 +4,6 @@ package gpu
 
 import (
 	"os/exec"
-	"strconv"
-	"strings"
 )
 
 // Detect queries the system for a supported GPU.
@@ -18,6 +16,7 @@ func Detect() Info {
 }
 
 // detectNVIDIA queries nvidia-smi, which ships with all NVIDIA drivers.
+// Enumerates ALL NVIDIA GPUs and aggregates VRAM.
 func detectNVIDIA() (Info, bool) {
 	out, err := exec.Command("nvidia-smi",
 		"--query-gpu=name,memory.total,memory.free,driver_version",
@@ -26,24 +25,6 @@ func detectNVIDIA() (Info, bool) {
 	if err != nil {
 		return Info{}, false
 	}
-
-	lines := strings.Split(strings.TrimSpace(string(out)), "\n")
-	parts := strings.Split(lines[0], ", ")
-	if len(parts) < 4 {
-		return Info{}, false
-	}
-
-	totalMB, _ := strconv.Atoi(strings.TrimSpace(parts[1]))
-	freeMB, _ := strconv.Atoi(strings.TrimSpace(parts[2]))
-
-	return Info{
-		Vendor:        "nvidia",
-		Name:          strings.TrimSpace(parts[0]),
-		VRAMTotalMB:   totalMB,
-		VRAMFreeMB:    freeMB,
-		VRAMTotalGB:   float64(totalMB) / 1024,
-		DriverVersion: strings.TrimSpace(parts[3]),
-		Count:         len(lines),
-		VRAMExact:     true,
-	}, true
+	return parseNvidiaSmi(string(out))
 }
+

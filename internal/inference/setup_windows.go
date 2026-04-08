@@ -86,26 +86,13 @@ func downloadOllama() error {
 
 // ollamaEnv returns environment variables for the Ollama subprocess.
 // Sets GPU routing for NVIDIA (CUDA) and AMD (ROCm/HIP) cards.
-func ollamaEnv(info gpu.Info) []string {
+//
+// gpuSplit=true sets OLLAMA_SCHED_SPREAD=1, which makes Ollama distribute a
+// single model's layers across all detected GPUs instead of consolidating
+// onto the fewest cards. Only meaningful when info.Count > 1.
+func ollamaEnv(info gpu.Info, gpuSplit bool) []string {
 	env := os.Environ()
-
-	// Use all available GPUs.
-	env = append(env, "OLLAMA_NUM_GPU=99")
-
-	switch info.Vendor {
-	case "nvidia":
-		// Enable FlashAttention for faster inference on Ampere+.
-		env = append(env, "OLLAMA_FLASH_ATTENTION=1")
-		// CUDA: expose all GPUs (Ollama selects best by VRAM).
-		env = append(env, "CUDA_VISIBLE_DEVICES=all")
-
-	case "amd":
-		// ROCm/HIP: expose all GPUs.
-		env = append(env, "HIP_VISIBLE_DEVICES=all")
-		// Disable Flash Attention — not universally supported on ROCm.
-		env = append(env, "OLLAMA_FLASH_ATTENTION=0")
-	}
-
+	env = append(env, gpuLayerEnv(info, gpuSplit)...)
 	return env
 }
 

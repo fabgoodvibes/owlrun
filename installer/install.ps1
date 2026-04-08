@@ -74,36 +74,54 @@ function Download-File {
 }
 
 function Get-GpuInfo {
-  # Try NVIDIA first via nvidia-smi
+  # Returns: Vendor, Name (primary), VRAMTotalMB (sum), Count, Gpus (array)
+  $gpus = @()
+
+  # Try NVIDIA first via nvidia-smi -enumerates all NVIDIA GPUs
   $nvidiaSmi = Get-Command 'nvidia-smi' -ErrorAction SilentlyContinue
   if ($nvidiaSmi) {
     try {
       $out = & nvidia-smi --query-gpu=name,memory.total --format=csv,noheader 2>$null
       if ($out) {
-        $parts = $out.Trim().Split(',')
-        $name  = $parts[0].Trim()
-        $vramMB = [int]($parts[1].Trim() -replace ' MiB','')
-        return @{ Vendor = 'nvidia'; Name = $name; VRAMTotalMB = $vramMB }
+        foreach ($line in @($out)) {
+          if ([string]::IsNullOrWhiteSpace($line)) { continue }
+          $parts = $line.Trim().Split(',')
+          $name  = $parts[0].Trim()
+          $vramMB = [int]($parts[1].Trim() -replace ' MiB','')
+          $gpus += @{ Vendor = 'nvidia'; Name = $name; VRAMTotalMB = $vramMB }
+        }
       }
     } catch {}
   }
 
-  # AMD/other via WMI
-  try {
-    $gpu = Get-WmiObject Win32_VideoController |
-           Where-Object { $_.AdapterRAM -gt 0 } |
-           Sort-Object AdapterRAM -Descending |
-           Select-Object -First 1
-    if ($gpu) {
-      $vramMB = [math]::Round($gpu.AdapterRAM / 1MB)
-      $vendor = if ($gpu.Name -match 'AMD|Radeon') { 'amd' }
-                elseif ($gpu.Name -match 'NVIDIA')  { 'nvidia' }
-                else                                { 'other' }
-      return @{ Vendor = $vendor; Name = $gpu.Name; VRAMTotalMB = $vramMB }
-    }
-  } catch {}
+  # AMD/other via WMI -enumerate all video controllers with VRAM
+  if ($gpus.Count -eq 0) {
+    try {
+      $list = Get-WmiObject Win32_VideoController |
+              Where-Object { $_.AdapterRAM -gt 0 } |
+              Sort-Object AdapterRAM -Descending
+      foreach ($gpu in $list) {
+        $vramMB = [math]::Round($gpu.AdapterRAM / 1MB)
+        $vendor = if ($gpu.Name -match 'AMD|Radeon') { 'amd' }
+                  elseif ($gpu.Name -match 'NVIDIA')  { 'nvidia' }
+                  else                                { 'other' }
+        $gpus += @{ Vendor = $vendor; Name = $gpu.Name; VRAMTotalMB = $vramMB }
+      }
+    } catch {}
+  }
 
-  return @{ Vendor = 'none'; Name = 'Unknown'; VRAMTotalMB = 0 }
+  if ($gpus.Count -eq 0) {
+    return @{ Vendor = 'none'; Name = 'Unknown'; VRAMTotalMB = 0; Count = 0; Gpus = @() }
+  }
+
+  $totalVram = ($gpus | ForEach-Object { $_.VRAMTotalMB } | Measure-Object -Sum).Sum
+  return @{
+    Vendor      = $gpus[0].Vendor
+    Name        = $gpus[0].Name
+    VRAMTotalMB = $totalVram
+    Count       = $gpus.Count
+    Gpus        = $gpus
+  }
 }
 
 function Install-Ollama {
@@ -202,7 +220,16 @@ if ($gpu.Vendor -eq 'none') {
   Write-Warn "No GPU detected -will run CPU-only (small models, lower earnings)"
 } else {
   $vramGB = [math]::Round($gpu.VRAMTotalMB / 1024, 1)
-  Write-OK "$($gpu.Name) -$vramGB GB VRAM ($($gpu.Vendor.ToUpper()))"
+  if ($gpu.Count -gt 1) {
+    Write-OK "$($gpu.Count)x GPUs detected -$vramGB GB VRAM total"
+    for ($i = 0; $i -lt $gpu.Gpus.Count; $i++) {
+      $g = $gpu.Gpus[$i]
+      $gVramGB = [math]::Round($g.VRAMTotalMB / 1024, 1)
+      Write-OK "  [$i] $($g.Name) -$gVramGB GB VRAM ($($g.Vendor.ToUpper()))"
+    }
+  } else {
+    Write-OK "$($gpu.Name) -$vramGB GB VRAM ($($gpu.Vendor.ToUpper()))"
+  }
 }
 
 # -- 2. Disk space check -------------------------------------------------------

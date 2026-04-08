@@ -22,6 +22,7 @@ func Detect() Info {
 }
 
 // detectNVIDIA queries nvidia-smi (for external NVIDIA eGPUs on macOS).
+// Enumerates ALL NVIDIA GPUs.
 func detectNVIDIA() (Info, bool) {
 	out, err := exec.Command("nvidia-smi",
 		"--query-gpu=name,memory.total,memory.free,driver_version",
@@ -30,26 +31,7 @@ func detectNVIDIA() (Info, bool) {
 	if err != nil {
 		return Info{}, false
 	}
-
-	lines := strings.Split(strings.TrimSpace(string(out)), "\n")
-	parts := strings.Split(lines[0], ", ")
-	if len(parts) < 4 {
-		return Info{}, false
-	}
-
-	totalMB, _ := strconv.Atoi(strings.TrimSpace(parts[1]))
-	freeMB, _ := strconv.Atoi(strings.TrimSpace(parts[2]))
-
-	return Info{
-		Vendor:        "nvidia",
-		Name:          strings.TrimSpace(parts[0]),
-		VRAMTotalMB:   totalMB,
-		VRAMFreeMB:    freeMB,
-		VRAMTotalGB:   float64(totalMB) / 1024,
-		DriverVersion: strings.TrimSpace(parts[3]),
-		Count:         len(lines),
-		VRAMExact:     true,
-	}, true
+	return parseNvidiaSmi(string(out))
 }
 
 // detectAppleSilicon detects Apple Silicon (M1/M2/M3/M4) and reports
@@ -89,6 +71,7 @@ func detectAppleSilicon() (Info, bool) {
 		VRAMFreeMB:  freeMB,
 		VRAMTotalGB: float64(totalMB) / 1024,
 		Count:       1,
+		GPUs:        []GPUDetail{{Name: name, VRAMTotalMB: totalMB, VRAMFreeMB: freeMB}},
 		VRAMExact:   false, // unified memory, not dedicated VRAM
 	}, true
 }

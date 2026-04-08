@@ -77,6 +77,10 @@ func pollNVIDIA() Stats {
 		temp, _ := strconv.Atoi(strings.TrimSpace(parts[2]))
 		power, _ := strconv.ParseFloat(strings.TrimSpace(parts[3]), 64)
 
+		s.PerGPU = append(s.PerGPU, GPUStat{
+			UtilizationPct: util, VRAMFreeMB: vramFree, TemperatureC: temp, PowerDrawW: power,
+		})
+
 		if util > s.UtilizationPct {
 			s.UtilizationPct = util
 		}

@@ -3,7 +3,6 @@ package gpu
 import (
 	"encoding/json"
 	"os/exec"
-	"strconv"
 	"strings"
 )
 
@@ -21,6 +20,7 @@ func Detect() Info {
 }
 
 // detectNVIDIA queries nvidia-smi, which ships with all NVIDIA drivers.
+// Enumerates ALL NVIDIA GPUs and aggregates VRAM.
 func detectNVIDIA() (Info, bool) {
 	out, err := exec.Command("nvidia-smi",
 		"--query-gpu=name,memory.total,memory.free,driver_version",
@@ -29,70 +29,70 @@ func detectNVIDIA() (Info, bool) {
 	if err != nil {
 		return Info{}, false
 	}
-
-	lines := strings.Split(strings.TrimSpace(string(out)), "\n")
-	parts := strings.Split(lines[0], ", ")
-	if len(parts) < 4 {
-		return Info{}, false
-	}
-
-	totalMB, _ := strconv.Atoi(strings.TrimSpace(parts[1]))
-	freeMB, _ := strconv.Atoi(strings.TrimSpace(parts[2]))
-
-	return Info{
-		Vendor:        "nvidia",
-		Name:          strings.TrimSpace(parts[0]),
-		VRAMTotalMB:   totalMB,
-		VRAMFreeMB:    freeMB,
-		VRAMTotalGB:   float64(totalMB) / 1024,
-		DriverVersion: strings.TrimSpace(parts[3]),
-		Count:         len(lines), // one line per GPU
-		VRAMExact:     true,
-	}, true
+	return parseNvidiaSmi(string(out))
 }
 
 // detectAMD queries Win32_VideoController via PowerShell.
-// Note: WMI caps AdapterRAM at 4 GB (uint32 max) for high-VRAM cards.
-// We flag VRAMExact=false and use the WMI value as a conservative floor.
+// Enumerates ALL AMD GPUs. Note: WMI caps AdapterRAM at 4 GB (uint32 max)
+// for high-VRAM cards; VRAMExact=false in that case.
 func detectAMD() (Info, bool) {
 	// PowerShell is available on all Windows 7+ systems.
+	// ConvertTo-Json -AsArray ensures we always get a JSON array even for one GPU.
 	script := `Get-WmiObject Win32_VideoController |` +
 		` Where-Object {$_.Name -match 'AMD|Radeon|ATI'} |` +
-		` Select-Object -First 1 Name,AdapterRAM,DriverVersion |` +
-		` ConvertTo-Json`
+		` Select-Object Name,AdapterRAM,DriverVersion |` +
+		` ConvertTo-Json -AsArray`
 
 	out, err := exec.Command("powershell", "-NoProfile", "-Command", script).Output()
 	if err != nil || len(strings.TrimSpace(string(out))) == 0 {
 		return Info{}, false
 	}
 
-	var result struct {
+	type wmiGPU struct {
 		Name          string `json:"Name"`
 		AdapterRAM    int64  `json:"AdapterRAM"`
 		DriverVersion string `json:"DriverVersion"`
 	}
-	if err := json.Unmarshal(out, &result); err != nil || result.Name == "" {
+	var results []wmiGPU
+	// -AsArray was added in PowerShell 6+; on Windows PowerShell 5 a single
+	// object is emitted as a bare object. Handle both shapes.
+	if err := json.Unmarshal(out, &results); err != nil {
+		var single wmiGPU
+		if err2 := json.Unmarshal(out, &single); err2 != nil || single.Name == "" {
+			return Info{}, false
+		}
+		results = []wmiGPU{single}
+	}
+	if len(results) == 0 {
 		return Info{}, false
 	}
 
-	totalMB := int(result.AdapterRAM / 1024 / 1024)
-	exact := true
-
-	// WMI reports 4294967295 bytes (uint32 max) when VRAM >= 4 GB.
-	// Use 4096 MB as a conservative floor; actual VRAM is likely higher.
-	if result.AdapterRAM == 4294967295 {
-		totalMB = 4096
-		exact = false
+	info := Info{Vendor: "amd", VRAMExact: true}
+	for _, r := range results {
+		if r.Name == "" {
+			continue
+		}
+		totalMB := int(r.AdapterRAM / 1024 / 1024)
+		// WMI reports 4294967295 bytes (uint32 max) when VRAM >= 4 GB.
+		// Use 4096 MB as a conservative floor; actual VRAM is likely higher.
+		if r.AdapterRAM == 4294967295 {
+			totalMB = 4096
+			info.VRAMExact = false
+		}
+		info.GPUs = append(info.GPUs, GPUDetail{
+			Name:        strings.TrimSpace(r.Name),
+			VRAMTotalMB: totalMB,
+		})
+		info.VRAMTotalMB += totalMB
+		if info.DriverVersion == "" {
+			info.DriverVersion = strings.TrimSpace(r.DriverVersion)
+		}
 	}
-
-	return Info{
-		Vendor:        "amd",
-		Name:          strings.TrimSpace(result.Name),
-		VRAMTotalMB:   totalMB,
-		VRAMFreeMB:    0, // AMD has no equivalent of nvidia-smi on Windows without HIP SDK
-		VRAMTotalGB:   float64(totalMB) / 1024,
-		DriverVersion: strings.TrimSpace(result.DriverVersion),
-		Count:         1,
-		VRAMExact:     exact,
-	}, true
+	if len(info.GPUs) == 0 {
+		return Info{}, false
+	}
+	info.Count = len(info.GPUs)
+	info.VRAMTotalGB = float64(info.VRAMTotalMB) / 1024
+	info.Name = info.GPUs[info.LargestGPUIndex()].Name
+	return info, true
 }
