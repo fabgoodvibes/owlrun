@@ -128,7 +128,13 @@ func (w *Wallet) AutoClaim(gatewaySats int64) {
 		return
 	}
 
-	token, err := w.Claim(0) // 0 = claim all
+	// Gateway requires a positive amount_sats — convert msats to sats.
+	claimSats := gatewaySats / 1000
+	if claimSats <= 0 {
+		return
+	}
+
+	token, err := w.Claim(claimSats)
 	if err != nil {
 		log.Printf("owlrun: wallet: auto-claim failed: %v", err)
 		if token != "" {
