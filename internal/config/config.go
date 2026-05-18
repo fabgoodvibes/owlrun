@@ -63,6 +63,7 @@ type InferenceConfig struct {
 	ContextLength int    // Ollama num_ctx; 0 = use default (8192)
 	ModelMode     string // "auto" (default) or "manual"
 	Category      string // auto-mode category: "general", "code", "reasoning", "small", "" = best price
+	GPUSplit      bool   // multi-GPU: true = split one model across all cards (OLLAMA_SCHED_SPREAD=1)
 }
 
 type IdleConfig struct {
@@ -271,6 +272,24 @@ func SaveContextLength(ctxLen int) error {
 	return f.SaveTo(path)
 }
 
+// SaveGPUSplit persists the multi-GPU model-split toggle to the config file.
+func SaveGPUSplit(on bool) error {
+	path := Path()
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		return err
+	}
+	f, err := ini.LooseLoad(path)
+	if err != nil {
+		f = ini.Empty()
+	}
+	v := "false"
+	if on {
+		v = "true"
+	}
+	f.Section("inference").Key("gpu_split").SetValue(v)
+	return f.SaveTo(path)
+}
+
 // SaveJobMode persists the job acceptance mode to the config file.
 func SaveJobMode(mode string) error {
 	path := Path()
@@ -397,6 +416,7 @@ func Load() (Config, error) {
 			cfg.Inference.ModelMode = mm
 		}
 		cfg.Inference.Category = sec.Key("category").String()
+		cfg.Inference.GPUSplit = sec.Key("gpu_split").MustBool(false)
 	}
 
 	if sec, err := f.GetSection("idle"); err == nil {

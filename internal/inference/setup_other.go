@@ -17,8 +17,13 @@ func findOllama() (string, error) {
 	return exec.LookPath("ollama")
 }
 
-// ollamaEnv returns the current environment unchanged on non-Windows.
-func ollamaEnv(_ gpu.Info) []string { return os.Environ() }
+// ollamaEnv returns the environment for the Ollama subprocess on Linux.
+// Sets GPU layer offload and (when gpuSplit) multi-GPU model splitting.
+func ollamaEnv(info gpu.Info, gpuSplit bool) []string {
+	env := os.Environ()
+	env = append(env, gpuLayerEnv(info, gpuSplit)...)
+	return env
+}
 
 // killProcess sends SIGKILL on non-Windows platforms.
 func killProcess(cmd *exec.Cmd) error {

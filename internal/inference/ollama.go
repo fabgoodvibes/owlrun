@@ -47,6 +47,7 @@ type PullProgress struct {
 type Manager struct {
 	mu            sync.Mutex
 	gpuInfo       gpu.Info
+	gpuSplit      bool      // multi-GPU: split one model across all cards (OLLAMA_SCHED_SPREAD=1)
 	cmd           *exec.Cmd // nil if not running
 	contextLength int       // num_ctx for Ollama; 0 = Ollama default
 	host          string    // Ollama API base URL; empty = ollamaHost default
@@ -74,6 +75,21 @@ func (m *Manager) ollamaAddr() string {
 		return m.host
 	}
 	return ollamaHost
+}
+
+// SetGPUSplit toggles multi-GPU model splitting (OLLAMA_SCHED_SPREAD=1).
+// Takes effect on the next Ollama subprocess restart.
+func (m *Manager) SetGPUSplit(on bool) {
+	m.mu.Lock()
+	m.gpuSplit = on
+	m.mu.Unlock()
+}
+
+// GPUSplit reports whether multi-GPU model splitting is enabled.
+func (m *Manager) GPUSplit() bool {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return m.gpuSplit
 }
 
 // SetContextLength sets the num_ctx parameter for model loading and inference.
@@ -128,7 +144,7 @@ func (m *Manager) Start() error {
 	}
 
 	cmd := exec.Command(ollamaPath, "serve")
-	cmd.Env = ollamaEnv(m.gpuInfo) // platform-specific GPU env vars
+	cmd.Env = ollamaEnv(m.gpuInfo, m.gpuSplit) // platform-specific GPU env vars
 	if err := cmd.Start(); err != nil {
 		// Start failed — but Ollama might have become healthy in the
 		// meantime (race with a service starting up). Check once more.

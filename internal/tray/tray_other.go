@@ -114,6 +114,7 @@ func Run(cfg config.Config, dash *dashboard.Server, mockMode bool) {
 		d.ollamaMgr.SetContextLength(cfg.Inference.ContextLength)
 		gw.SetContextLength(cfg.Inference.ContextLength)
 	}
+	d.ollamaMgr.SetGPUSplit(cfg.Inference.GPUSplit)
 	gw.SetDebug(cfg.Marketplace.Debug)
 
 	if dash != nil {
@@ -203,7 +204,7 @@ func Run(cfg config.Config, dash *dashboard.Server, mockMode bool) {
 			d.mu.Lock()
 			d.model = model
 			d.mu.Unlock()
-			models, _ := d.ollamaMgr.SelectModels(d.gpuInfo.VRAMTotalGB, d.cfg.Inference.MaxVRAMPct)
+			models, _ := d.ollamaMgr.SelectModels(gpu.EffectiveVRAMGB(d.gpuInfo, d.cfg.Inference.GPUSplit), d.cfg.Inference.MaxVRAMPct)
 			d.gateway.SetModels(models)
 			go d.gateway.Reconnect()
 			return nil
@@ -219,7 +220,7 @@ func Run(cfg config.Config, dash *dashboard.Server, mockMode bool) {
 				return err
 			}
 			log.Printf("owlrun: removed model %s", model)
-			models, _ := d.ollamaMgr.SelectModels(d.gpuInfo.VRAMTotalGB, d.cfg.Inference.MaxVRAMPct)
+			models, _ := d.ollamaMgr.SelectModels(gpu.EffectiveVRAMGB(d.gpuInfo, d.cfg.Inference.GPUSplit), d.cfg.Inference.MaxVRAMPct)
 			d.gateway.SetModels(models)
 			go d.gateway.Reconnect()
 			return nil
@@ -255,6 +256,37 @@ func Run(cfg config.Config, dash *dashboard.Server, mockMode bool) {
 			log.Printf("owlrun: model mode changed to %s", mode)
 			return nil
 		})
+		dash.SetGPUSplitSetter(func(on bool) error {
+			if d.gpuInfo.Count < 2 {
+				return fmt.Errorf("gpu split requires multiple GPUs (detected %d)", d.gpuInfo.Count)
+			}
+			if err := config.SaveGPUSplit(on); err != nil {
+				return err
+			}
+			d.mu.Lock()
+			d.cfg.Inference.GPUSplit = on
+			d.mu.Unlock()
+			d.ollamaMgr.SetGPUSplit(on)
+			log.Printf("owlrun: gpu split changed to %v — restarting ollama to apply", on)
+			if err := d.ollamaMgr.Stop(); err != nil {
+				log.Printf("owlrun: stop ollama for gpu split change: %v", err)
+			}
+			if err := d.ollamaMgr.Start(); err != nil {
+				return fmt.Errorf("restart ollama: %w", err)
+			}
+			models, _ := d.ollamaMgr.SelectModels(gpu.EffectiveVRAMGB(d.gpuInfo, on), d.cfg.Inference.MaxVRAMPct)
+			if len(models) > 0 {
+				if err := d.ollamaMgr.LoadModel(models[0]); err != nil {
+					log.Printf("owlrun: reload model after gpu split change: %v", err)
+				}
+				d.mu.Lock()
+				d.model = models[0]
+				d.mu.Unlock()
+				d.gateway.SetModels(models)
+				go d.gateway.Reconnect()
+			}
+			return nil
+		})
 		dash.SetCategorySetter(func(cat string) error {
 			if err := config.SaveCategory(cat); err != nil {
 				return err
@@ -281,8 +313,8 @@ func Run(cfg config.Config, dash *dashboard.Server, mockMode bool) {
 		})
 	}
 
-	log.Printf("owlrun: node %s | gpu %s %s (%.0f GB VRAM)",
-		nodeID, info.Vendor, info.Name, info.VRAMTotalGB)
+	log.Printf("owlrun: node %s | gpu %s %s",
+		nodeID, info.Vendor, info.Describe())
 
 	go monitor.Start()
 	go d.idleLoop()
@@ -420,7 +452,7 @@ func (d *daemon) startEarning() {
 		cat := gpu.Category(d.cfg.Inference.Category)
 		models = d.selectAutoModels(cat)
 		if len(models) == 0 {
-			rec := gpu.RecommendByCategory(d.gpuInfo.VRAMTotalGB, d.cfg.Inference.MaxVRAMPct, cat)
+			rec := gpu.RecommendByCategory(gpu.EffectiveVRAMGB(d.gpuInfo, d.cfg.Inference.GPUSplit), d.cfg.Inference.MaxVRAMPct, cat)
 			log.Printf("owlrun: auto mode — no matching models installed, pulling %s", rec)
 			if err := d.loadOrPull(rec); err != nil {
 				log.Printf("owlrun: auto-pull %s failed: %v", rec, err)
@@ -436,7 +468,7 @@ func (d *daemon) startEarning() {
 		log.Printf("owlrun: auto mode (category=%s) — %d models, primary: %s", cat, len(models), models[0])
 	} else {
 		var suggestions []string
-		models, suggestions = d.ollamaMgr.SelectModels(d.gpuInfo.VRAMTotalGB, d.cfg.Inference.MaxVRAMPct)
+		models, suggestions = d.ollamaMgr.SelectModels(gpu.EffectiveVRAMGB(d.gpuInfo, d.cfg.Inference.GPUSplit), d.cfg.Inference.MaxVRAMPct)
 		if len(models) == 0 {
 			log.Printf("owlrun: no models installed — install one first, then restart")
 			for _, s := range suggestions {
@@ -471,7 +503,7 @@ func (d *daemon) startEarning() {
 }
 
 func (d *daemon) selectAutoModels(cat gpu.Category) []string {
-	ranked := gpu.RankedByCategory(d.gpuInfo.VRAMTotalGB, d.cfg.Inference.MaxVRAMPct, cat)
+	ranked := gpu.RankedByCategory(gpu.EffectiveVRAMGB(d.gpuInfo, d.cfg.Inference.GPUSplit), d.cfg.Inference.MaxVRAMPct, cat)
 	installed := d.ollamaMgr.ListInstalled()
 	installedSet := make(map[string]bool, len(installed))
 	for _, m := range installed {
@@ -549,12 +581,45 @@ func (d *daemon) statusSnapshot() dashboard.Status {
 	gpuStats := d.monitor.Latest()
 	s.GPU.Name = d.gpuInfo.Name
 	s.GPU.Vendor = d.gpuInfo.Vendor
-	s.GPU.VRAMTotalMB = d.gpuInfo.VRAMTotalMB
 	s.GPU.VRAMExact = d.gpuInfo.VRAMExact
 	s.GPU.UtilPct = gpuStats.UtilizationPct
-	s.GPU.VRAMFreeMB = gpuStats.VRAMFreeMB
 	s.GPU.TempC = gpuStats.TemperatureC
 	s.GPU.PowerW = gpuStats.PowerDrawW
+	s.GPU.Count = d.gpuInfo.Count
+	s.GPU.Split = d.cfg.Inference.GPUSplit
+	largestIdx := d.gpuInfo.LargestGPUIndex()
+	effectiveTotalMB := 0
+	effectiveFreeMB := 0
+	for i, g := range d.gpuInfo.GPUs {
+		if !d.cfg.Inference.GPUSplit && i != largestIdx {
+			continue
+		}
+		effectiveTotalMB += g.VRAMTotalMB
+		if i < len(gpuStats.PerGPU) {
+			effectiveFreeMB += gpuStats.PerGPU[i].VRAMFreeMB
+		}
+	}
+	if effectiveTotalMB == 0 {
+		effectiveTotalMB = d.gpuInfo.VRAMTotalMB
+		effectiveFreeMB = gpuStats.VRAMFreeMB
+	}
+	s.GPU.VRAMTotalMB = effectiveTotalMB
+	s.GPU.VRAMFreeMB = effectiveFreeMB
+	for i, g := range d.gpuInfo.GPUs {
+		entry := dashboard.GPUEntry{
+			Name:        g.Name,
+			VRAMTotalMB: g.VRAMTotalMB,
+			Active:      d.cfg.Inference.GPUSplit || i == largestIdx,
+		}
+		if i < len(gpuStats.PerGPU) {
+			ps := gpuStats.PerGPU[i]
+			entry.UtilPct = ps.UtilizationPct
+			entry.VRAMFreeMB = ps.VRAMFreeMB
+			entry.TempC = ps.TemperatureC
+			entry.PowerW = ps.PowerDrawW
+		}
+		s.GPU.GPUs = append(s.GPU.GPUs, entry)
+	}
 
 	s.Model = model
 	installed := d.ollamaMgr.ListInstalled()
@@ -562,7 +627,7 @@ func (d *daemon) statusSnapshot() dashboard.Status {
 	for _, m := range installed {
 		installedSet[m] = true
 	}
-	for _, mi := range gpu.AllModelInfos(d.gpuInfo.VRAMTotalGB, d.cfg.Inference.MaxVRAMPct) {
+	for _, mi := range gpu.AllModelInfos(gpu.EffectiveVRAMGB(d.gpuInfo, d.cfg.Inference.GPUSplit), d.cfg.Inference.MaxVRAMPct) {
 		s.AvailableModels = append(s.AvailableModels, dashboard.AvailableModel{
 			Tag: mi.Tag, VramGB: mi.VramGB, Installed: installedSet[mi.Tag], Active: mi.Tag == model, Fits: mi.Fits, Category: string(mi.Category),
 		})
